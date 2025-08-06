@@ -1,0 +1,44 @@
+{
+  "workflow_type": "federated_learning",
+  "federated_config": {
+    "expected_nodes": ["iot-0", "iot-1", "iot-2", "iot-3", "iot-4"],
+    "min_nodes_required": 3,
+    "coordinator_election": "consensus",
+    "aggregation_strategy": "fedavg",
+    "max_rounds": 5,
+    "round_timeout": 300
+  },
+  "start": "federated-training-task",
+  "nodes": {
+    "federated-training-task": {
+      "type": "federated_training",
+      "description": "Local model training on MNIST partition and return trained weights",
+      "execution_mode": "standard",
+      "next": []
+    }
+  },
+  "level_info": {
+    "0": [
+      {
+        "app_id": "federated-training-task",
+        "dependencies": [],
+        "resource_requirements": {
+          "cpu": 2,
+          "memory": 4096,
+          "gpu": false
+        }
+      }
+    ]
+  },
+  "metadata": {
+    "description": "MNIST Federated Learning with Two-Phase Architecture",
+    "author": "TrustMesh Framework",
+    "version": "3.0",
+    "privacy_preserving": true,
+    "consensus_integrated": true,
+    "created_date": "2024-01-01",
+    "supported_models": ["CNN", "DNN"],
+    "supported_datasets": ["MNIST"],
+    "architecture": "two_phase"
+  }
+}

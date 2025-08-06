@@ -1,0 +1,14 @@
+{
+  "workflow_type": "federated_learning",
+  "start": "federated-training-task",
+  "nodes": {
+    "federated-training-task": {"next": []}
+  },
+  "federated_config": {
+    "aggregation_strategy": "fedavg",
+    "expected_nodes": ["iot-0", "iot-1", "iot-2", "iot-3", "iot-4"],
+    "min_nodes_required": 3,
+    "max_rounds": 5,
+    "aggregation_timeout": 180
+  }
+}

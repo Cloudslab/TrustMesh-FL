@@ -338,13 +338,17 @@ items:"
                     response=\$(curl --cacert /certs/ca.crt --cert /certs/node0_crt --key /certs/node0_key -s -X PUT \"https://\${COUCHDB_USER}:\${COUCHDB_PASSWORD}@couchdb-0.default.svc.cluster.local:6984/\$db\")
                     echo \"Creating \$db response: \${response}\"
                   done &&
-                  echo \"Creating application databases (\${RESOURCE_REGISTRY_DB} and \${TASK_DATA_DB})\" &&
+                  echo \"Creating application databases (\${RESOURCE_REGISTRY_DB}, \${TASK_DATA_DB}, \${VALIDATION_DATASETS_DB}, and \${MODEL_WEIGHTS_DB})\" &&
                   response=\$(curl --cacert /certs/ca.crt --cert /certs/node0_crt --key /certs/node0_key -s -X PUT \"https://\${COUCHDB_USER}:\${COUCHDB_PASSWORD}@couchdb-0.default.svc.cluster.local:6984/\${RESOURCE_REGISTRY_DB}\") &&
                   echo \"Creating \${RESOURCE_REGISTRY_DB} response: \${response}\" &&
                   response=\$(curl --cacert /certs/ca.crt --cert /certs/node0_crt --key /certs/node0_key -s -X PUT \"https://\${COUCHDB_USER}:\${COUCHDB_PASSWORD}@couchdb-0.default.svc.cluster.local:6984/\${TASK_DATA_DB}\") &&
                   echo \"Creating \${TASK_DATA_DB} response: \${response}\" &&
-                  echo \"Waiting for \${RESOURCE_REGISTRY_DB} & \${TASK_DATA_DB} to be available on all nodes\" &&
-                  for db in \${RESOURCE_REGISTRY_DB} \${TASK_DATA_DB}; do
+                  response=\$(curl --cacert /certs/ca.crt --cert /certs/node0_crt --key /certs/node0_key -s -X PUT \"https://\${COUCHDB_USER}:\${COUCHDB_PASSWORD}@couchdb-0.default.svc.cluster.local:6984/\${VALIDATION_DATASETS_DB}\") &&
+                  echo \"Creating \${VALIDATION_DATASETS_DB} response: \${response}\" &&
+                  response=\$(curl --cacert /certs/ca.crt --cert /certs/node0_crt --key /certs/node0_key -s -X PUT \"https://\${COUCHDB_USER}:\${COUCHDB_PASSWORD}@couchdb-0.default.svc.cluster.local:6984/\${MODEL_WEIGHTS_DB}\") &&
+                  echo \"Creating \${MODEL_WEIGHTS_DB} response: \${response}\" &&
+                  echo \"Waiting for \${RESOURCE_REGISTRY_DB}, \${TASK_DATA_DB}, \${VALIDATION_DATASETS_DB} & \${MODEL_WEIGHTS_DB} to be available on all nodes\" &&
+                  for db in \${RESOURCE_REGISTRY_DB} \${TASK_DATA_DB} \${VALIDATION_DATASETS_DB} \${MODEL_WEIGHTS_DB}; do
                     for i in \$(seq 0 $((num_compute_nodes-1))); do
                       until curl --cacert /certs/ca.crt --cert /certs/node\${i}_crt --key /certs/node\${i}_key -s \"https://\${COUCHDB_USER}:\${COUCHDB_PASSWORD}@couchdb-\${i}.default.svc.cluster.local:6984/\${db}\" | grep -q \"\${db}\"; do
                         echo \"Waiting for \${db} on couchdb-\${i}...\"
@@ -353,12 +357,16 @@ items:"
                       echo \"\${db} is available on couchdb-\${i}\"
                     done
                   done &&
-                  echo \"CouchDB cluster setup completed and \${RESOURCE_REGISTRY_DB}, \${TASK_DATA_DB} databases are available on all nodes\"
+                  echo \"CouchDB cluster setup completed and \${RESOURCE_REGISTRY_DB}, \${TASK_DATA_DB}, \${VALIDATION_DATASETS_DB}, \${MODEL_WEIGHTS_DB} databases are available on all nodes\"
               env:
                 - name: RESOURCE_REGISTRY_DB
                   value: \"resource_registry\"
                 - name: TASK_DATA_DB
                   value: \"task_data\"
+                - name: VALIDATION_DATASETS_DB
+                  value: \"validation_datasets\"
+                - name: MODEL_WEIGHTS_DB
+                  value: \"model_weights\"
                 - name: COUCHDB_USER
                   valueFrom:
                     secretKeyRef:
@@ -434,7 +442,8 @@ items:"
                 - 'sh'
                 - '-c'
                 - |
-                  for db in \${RESOURCE_REGISTRY_DB} \${TASK_DATA_DB}; do
+                  # First wait for databases to exist
+                  for db in \${RESOURCE_REGISTRY_DB} \${TASK_DATA_DB} \${VALIDATION_DATASETS_DB} \${MODEL_WEIGHTS_DB}; do
                     for i in \$(seq 0 $((num_compute_nodes-1))); do
                       until curl --cacert /certs/ca.crt --cert /certs/node\${i}_crt --key /certs/node\${i}_key -s \"https://\${COUCHDB_USER}:\${COUCHDB_PASSWORD}@couchdb-\${i}.default.svc.cluster.local:6984/\${db}\" | grep -q \"\${db}\"; do
                         echo \"Waiting for \${db} on couchdb-\${i}...\"
@@ -443,12 +452,24 @@ items:"
                       echo \"\${db} is available on couchdb-\${i}\"
                     done
                   done &&
-                  echo \"CouchDB cluster setup completed and \${RESOURCE_REGISTRY_DB} & \${TASK_DATA_DB} is available on all nodes\"
+                  echo \"CouchDB cluster setup completed and databases are available on all nodes\" &&
+                  
+                  # Wait for validation dataset to be distributed
+                  echo \"Waiting for MNIST validation dataset to be available...\" &&
+                  until curl --cacert /certs/ca.crt --cert /certs/node0_crt --key /certs/node0_key -s \"https://\${COUCHDB_USER}:\${COUCHDB_PASSWORD}@couchdb-0.default.svc.cluster.local:6984/\${VALIDATION_DATASETS_DB}/mnist_validation_dataset\" | grep -q \"mnist_validation_dataset\"; do
+                    echo \"Waiting for validation dataset document in \${VALIDATION_DATASETS_DB}...\"
+                    sleep 10
+                  done &&
+                  echo \"✓ MNIST validation dataset is available in CouchDB\"
               env:
                 - name: RESOURCE_REGISTRY_DB
                   value: \"resource_registry\"
                 - name: TASK_DATA_DB
                   value: \"task_data\"
+                - name: VALIDATION_DATASETS_DB
+                  value: \"validation_datasets\"
+                - name: MODEL_WEIGHTS_DB
+                  value: \"model_weights\"
                 - name: COUCHDB_USER
                   valueFrom:
                     secretKeyRef:
@@ -574,6 +595,121 @@ items:"
                 - name: VALIDATOR_URL
                   value: \"tcp://$service_name:4004\"
 
+            - name: aggregation-request-tp
+              image: murtazahr/aggregation-request-tp:latest
+              env:
+                - name: VALIDATOR_URL
+                  value: \"tcp://$service_name:4004\"
+                - name: REDIS_HOST
+                  value: \"redis-cluster\"
+                - name: REDIS_PORT
+                  value: \"6379\"
+                - name: REDIS_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: redis-password
+                      key: password
+                - name: REDIS_SSL_CERT
+                  valueFrom:
+                    secretKeyRef:
+                      name: redis-certificates
+                      key: redis.crt
+                - name: REDIS_SSL_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: redis-certificates
+                      key: redis.key
+                - name: REDIS_SSL_CA
+                  valueFrom:
+                    secretKeyRef:
+                      name: redis-certificates
+                      key: ca.crt
+                - name: COUCHDB_HOST
+                  value: \"couchdb-$i.default.svc.cluster.local:6984\"
+                - name: COUCHDB_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: couchdb-secrets
+                      key: COUCHDB_USER
+                - name: COUCHDB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: couchdb-secrets
+                      key: COUCHDB_PASSWORD
+                - name: COUCHDB_SSL_CERT
+                  valueFrom:
+                    secretKeyRef:
+                      name: couchdb-certs
+                      key: node${i}_crt
+                - name: COUCHDB_SSL_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: couchdb-certs
+                      key: node${i}_key
+                - name: COUCHDB_SSL_CA
+                  valueFrom:
+                    secretKeyRef:
+                      name: couchdb-certs
+                      key: ca.crt
+
+            - name: aggregation-confirmation-tp
+              image: murtazahr/aggregation-confirmation-tp:latest
+              env:
+                - name: VALIDATOR_URL
+                  value: \"tcp://$service_name:4004\"
+                - name: REDIS_HOST
+                  value: \"redis-cluster\"
+                - name: REDIS_PORT
+                  value: \"6379\"
+                - name: REDIS_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: redis-password
+                      key: password
+                - name: REDIS_SSL_CERT
+                  valueFrom:
+                    secretKeyRef:
+                      name: redis-certificates
+                      key: redis.crt
+                - name: REDIS_SSL_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: redis-certificates
+                      key: redis.key
+                - name: REDIS_SSL_CA
+                  valueFrom:
+                    secretKeyRef:
+                      name: redis-certificates
+                      key: ca.crt
+                - name: COUCHDB_HOST
+                  value: \"couchdb-0.default.svc.cluster.local:6984\"
+                - name: COUCHDB_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: couchdb-secrets
+                      key: COUCHDB_USER
+                - name: COUCHDB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: couchdb-secrets
+                      key: COUCHDB_PASSWORD
+                - name: COUCHDB_SSL_CERT
+                  valueFrom:
+                    secretKeyRef:
+                      name: couchdb-certs
+                      key: node0_crt
+                - name: COUCHDB_SSL_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: couchdb-certs
+                      key: node0_key
+                - name: COUCHDB_SSL_CA
+                  valueFrom:
+                    secretKeyRef:
+                      name: couchdb-certs
+                      key: ca.crt
+
+
             - name: sawtooth-pbft-engine
               image: hyperledger/sawtooth-pbft-engine:chime
               command:
@@ -640,7 +776,7 @@ items:"
                 - name: COUCHDB_HOST
                   value: \"couchdb-$i.default.svc.cluster.local:6984\"
                 - name: RESOURCE_UPDATE_INTERVAL
-                  value: \"30\"
+                  value: \"600\"
                 - name: RESOURCE_UPDATE_BATCH_SIZE
                   value: \"500\"
                 - name: COUCHDB_USER
@@ -915,12 +1051,6 @@ items:"
               image: murtazahr/workflow-creation-client:latest
               env:
                 - name: VALIDATOR_URL
-                  value: \"tcp://sawtooth-0:4004\"
-
-            - name: scheduling-client
-              image: murtazahr/scheduling-client:latest
-              env:
-                - name: VALIDATOR_URL
                   value: \"tcp://sawtooth-0:4004\""
 
     echo "$yaml_content"
@@ -1085,12 +1215,120 @@ echo "$blockchain_network_yaml" > kubernetes-manifests/generated/blockchain-netw
 
 echo "Generated blockchain network deployment YAML has been saved to kubernetes-manifests/generated/blockchain-network-deployment.yaml"
 
-# Part 6: deploy network
-echo "Deploying Network"
-# Apply to kubernetes environment.
+# Part 6: Create MNIST Validation Dataset Distribution Job
+echo "Creating MNIST validation dataset distribution job"
+cat << EOF > kubernetes-manifests/generated/mnist-validation-dataset-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mnist-validation-dataset-distributor
+  labels:
+    job-name: mnist-validation-dataset-distributor
+spec:
+  template:
+    metadata:
+      labels:
+        job-name: mnist-validation-dataset-distributor
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-couchdb-setup
+          image: curlimages/curl:latest
+          command:
+            - 'sh'
+            - '-c'
+            - |
+              # Wait for validation_datasets database to be available
+              db="validation_datasets"
+              until curl --cacert /certs/ca.crt --cert /certs/node0_crt --key /certs/node0_key -s "https://\${COUCHDB_USER}:\${COUCHDB_PASSWORD}@couchdb-0.default.svc.cluster.local:6984/\${db}" | grep -q "\${db}"; do
+                echo "Waiting for \${db} database on couchdb-0..."
+                sleep 5
+              done
+              echo "\${db} database is available on couchdb-0"
+          env:
+            - name: COUCHDB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: couchdb-secrets
+                  key: COUCHDB_USER
+            - name: COUCHDB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: couchdb-secrets
+                  key: COUCHDB_PASSWORD
+          volumeMounts:
+            - name: couchdb-certs
+              mountPath: /certs
+      containers:
+        - name: validation-dataset-distributor
+          image: murtazahr/validation-dataset-distributor:latest
+          env:
+            - name: COUCHDB_HOST
+              value: "couchdb-0.default.svc.cluster.local:6984"
+            - name: COUCHDB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: couchdb-secrets
+                  key: COUCHDB_USER
+            - name: COUCHDB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: couchdb-secrets
+                  key: COUCHDB_PASSWORD
+            - name: COUCHDB_SSL_CERT
+              valueFrom:
+                secretKeyRef:
+                  name: couchdb-certs
+                  key: node0_crt
+            - name: COUCHDB_SSL_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: couchdb-certs
+                  key: node0_key
+            - name: COUCHDB_SSL_CA
+              valueFrom:
+                secretKeyRef:
+                  name: couchdb-certs
+                  key: ca.crt
+          volumeMounts:
+            - name: couchdb-certs
+              mountPath: /certs
+      restartPolicy: OnFailure
+      volumes:
+        - name: couchdb-certs
+          secret:
+            secretName: couchdb-certs
+  backoffLimit: 3
+EOF
+
+echo "Generated MNIST validation dataset distribution job YAML"
+
+# Part 7: deploy network
+echo "Deploying Network Infrastructure"
+# Apply base infrastructure first
 kubectl apply -f kubernetes-manifests/generated/config-and-secrets.yaml
 kubectl apply -f kubernetes-manifests/generated/couchdb-cluster-deployment.yaml
 kubectl apply -f kubernetes-manifests/static/local-docker-registry-deployment.yaml
+
+# Deploy validation dataset distributor job
+# The job has an init container that waits for CouchDB to be ready
+echo "Deploying MNIST validation dataset distributor..."
+kubectl apply -f kubernetes-manifests/generated/mnist-validation-dataset-job.yaml
+
+# Wait for the validation dataset to be distributed
+echo "Waiting for validation dataset distribution to complete..."
+wait_for_job mnist-validation-dataset-distributor
+
+# Now deploy the blockchain network (PBFT nodes) 
+# Their init containers will find the validation dataset already available
+echo "Deploying blockchain network with PBFT nodes..."
 kubectl apply -f kubernetes-manifests/generated/blockchain-network-deployment.yaml
 
 echo "Script execution completed successfully."
+echo ""
+echo "🎉 TrustMesh network deployed with federated learning support!"
+echo ""
+echo "Next steps for MNIST Federated Learning:"
+echo "1. Build and deploy applications: Run the instructions in RUN_MNIST_FEDERATED_LEARNING.md"
+echo "2. Verify federated schedule TP is running on compute nodes: kubectl logs pbft-0-<pod-id> -c federated-schedule-tp"
+echo "3. Check compute nodes are ready: kubectl get pods -l name=pbft-0"

@@ -21,11 +21,16 @@ STATUS_FAMILY_NAME = 'schedule-status'
 STATUS_FAMILY_VERSION = '1.0'
 IOT_DATA_FAMILY_NAME = 'iot-data'
 IOT_DATA_FAMILY_VERSION = '1.0'
+AGGREGATION_REQUEST_FAMILY_NAME = 'aggregation-request'
+AGGREGATION_REQUEST_FAMILY_VERSION = '1.0'
 IOT_DATA_NAMESPACE = hashlib.sha512(IOT_DATA_FAMILY_NAME.encode()).hexdigest()[:6]
 SCHEDULE_NAMESPACE = hashlib.sha512(SCHEDULE_FAMILY_NAME.encode()).hexdigest()[:6]
 STATUS_NAMESPACE = hashlib.sha512(STATUS_FAMILY_NAME.encode()).hexdigest()[:6]
 WORKFLOW_NAMESPACE = hashlib.sha512('workflow-dependency'.encode()).hexdigest()[:6]
 DOCKER_IMAGE_NAMESPACE = hashlib.sha512('docker-image'.encode()).hexdigest()[:6]
+AGGREGATION_NAMESPACE = hashlib.sha512(AGGREGATION_REQUEST_FAMILY_NAME.encode()).hexdigest()[:6]
+# Include confirmation namespace to ensure serial execution with aggregation-confirmation-tp
+CONFIRMATION_NAMESPACE = hashlib.sha512('aggregation-confirmation'.encode()).hexdigest()[:6]
 
 PRIVATE_KEY_FILE = os.getenv('SAWTOOTH_PRIVATE_KEY', '/root/.sawtooth/keys/client.priv')
 # Get comma-separated list of validator URLs from environment variable
@@ -113,6 +118,8 @@ class TransactionCreator:
 
     def submit_batch(self, batch):
         """Submit batch to the next validator in the round-robin sequence"""
+        from sawtooth_sdk.protobuf.client_batch_submit_pb2 import ClientBatchSubmitResponse
+        
         validator_url = self.get_next_validator_url()
         logger.info(f"Submitting batch to validator: {validator_url}")
 
@@ -123,24 +130,65 @@ class TransactionCreator:
                 content=BatchList(batches=[batch]).SerializeToString()
             )
             result = future.result()
-            return result
+            
+            # Parse the ClientBatchSubmitResponse to check actual status
+            response = ClientBatchSubmitResponse()
+            response.ParseFromString(result.content)
+            
+            # Check the actual status code
+            logger.info(f"Batch submission response - Status code: {response.status}")
+            if response.status == ClientBatchSubmitResponse.OK:
+                logger.info(f"Batch submitted successfully with status OK (code: {response.status})")
+                return result
+            elif response.status == ClientBatchSubmitResponse.INVALID_BATCH:
+                logger.error(f"Batch submission failed: INVALID_BATCH (code: {response.status})")
+                raise Exception(f"Invalid batch submission: {response}")
+            elif response.status == ClientBatchSubmitResponse.INTERNAL_ERROR:
+                logger.error(f"Batch submission failed: INTERNAL_ERROR (code: {response.status})")
+                raise Exception(f"Internal error during batch submission: {response}")
+            elif response.status == ClientBatchSubmitResponse.QUEUE_FULL:
+                logger.error(f"Batch submission failed: QUEUE_FULL (code: {response.status})")
+                raise Exception(f"Validator queue full: {response}")
+            else:
+                logger.error(f"Batch submission failed with unknown status: {response.status}")
+                raise Exception(f"Unknown status during batch submission: {response}")
+                
         except Exception as e:
             logger.error(f"Failed to submit to validator {validator_url}: {str(e)}")
             # If submission fails, try the next validator
             if len(VALIDATOR_URLS) > 1:
                 validator_url = self.get_next_validator_url()
                 logger.info(f"Retrying with next validator: {validator_url}")
-                stream = Stream(validator_url)
-                future = stream.send(
-                    message_type='CLIENT_BATCH_SUBMIT_REQUEST',
-                    content=BatchList(batches=[batch]).SerializeToString()
-                )
-                return future.result()
+                try:
+                    stream = Stream(validator_url)
+                    future = stream.send(
+                        message_type='CLIENT_BATCH_SUBMIT_REQUEST',
+                        content=BatchList(batches=[batch]).SerializeToString()
+                    )
+                    result = future.result()
+                    
+                    # Parse the response for retry as well
+                    response = ClientBatchSubmitResponse()
+                    response.ParseFromString(result.content)
+                    
+                    logger.info(f"Retry batch submission response - Status code: {response.status}")
+                    if response.status == ClientBatchSubmitResponse.OK:
+                        logger.info(f"Batch submitted successfully on retry with status OK (code: {response.status})")
+                        return result
+                    else:
+                        logger.error(f"Retry also failed with status: {response.status}")
+                        raise Exception(f"Retry failed with status {response.status}: {response}")
+                except Exception as retry_e:
+                    logger.error(f"Retry to validator {validator_url} also failed: {str(retry_e)}")
+                    raise
             raise
 
     def create_and_send_transactions(self, iot_data, workflow_id, iot_port, iot_public_key):
         try:
+            # Always generate a new schedule_id for each transaction
             schedule_id = str(uuid.uuid4())
+            logger.info(f"Generated new schedule ID: {schedule_id}")
+            
             timestamp = int(time.time())
 
             schedule_payload = {
@@ -163,6 +211,7 @@ class TransactionCreator:
                 "timestamp": timestamp,
                 "status": "REQUESTED"
             }
+                
             status_inputs = [STATUS_NAMESPACE]
             status_outputs = [STATUS_NAMESPACE]
             status_txn = create_transaction(self.signer, STATUS_FAMILY_NAME, STATUS_FAMILY_VERSION,
@@ -174,6 +223,7 @@ class TransactionCreator:
                 "workflow_id": workflow_id,
                 "schedule_id": schedule_id
             }
+                
             iot_data_inputs = [IOT_DATA_NAMESPACE, WORKFLOW_NAMESPACE]
             iot_data_outputs = [IOT_DATA_NAMESPACE]
             iot_data_txn = create_transaction(self.signer, IOT_DATA_FAMILY_NAME, IOT_DATA_FAMILY_VERSION,
@@ -193,6 +243,112 @@ class TransactionCreator:
 
         except Exception as ex:
             logger.error(f"Error creating and sending transactions: {str(ex)}")
+            raise
+
+
+    def create_aggregation_request(self, workflow_id, node_id, model_weights, round_number=None, metadata=None, 
+                                 iot_port=None, iot_public_key=None):
+        """
+        Create and submit aggregation request transaction for federated learning.
+        This is the second phase of federated learning where trained model weights are submitted for aggregation.
+        Note: round_number from IoT nodes is ignored - global rounds are managed by the aggregation-request-tp.
+        """
+        try:
+            logger.info(f"Creating aggregation request for node {node_id}, workflow {workflow_id} (IoT round {round_number} ignored)")
+            
+            timestamp = int(time.time())
+            
+            aggregation_payload = {
+                "workflow_id": workflow_id,
+                "node_id": node_id,
+                "model_weights": model_weights,
+                "timestamp": timestamp,
+                "metadata": metadata or {}
+            }
+            
+            # Include IoT node connection details for ZMQ broadcasting
+            if iot_port and iot_public_key:
+                aggregation_payload["source_url"] = f"{IOT_URL}:{iot_port}"
+                aggregation_payload["source_public_key"] = iot_public_key
+                logger.info(f"Added IoT connection details: {IOT_URL}:{iot_port}")
+            
+            # Only include round_number for backward compatibility, but it will be ignored by the TP
+            if round_number is not None:
+                aggregation_payload["round_number"] = round_number
+            
+            # Include all namespaces that aggregation TPs declare to force serial execution
+            aggregation_inputs = [AGGREGATION_NAMESPACE, WORKFLOW_NAMESPACE, CONFIRMATION_NAMESPACE]
+            aggregation_outputs = [AGGREGATION_NAMESPACE, CONFIRMATION_NAMESPACE]
+            
+            aggregation_txn = create_transaction(
+                self.signer, 
+                AGGREGATION_REQUEST_FAMILY_NAME, 
+                AGGREGATION_REQUEST_FAMILY_VERSION,
+                aggregation_payload, 
+                aggregation_inputs, 
+                aggregation_outputs
+            )
+            
+            # Create batch and submit
+            batch = create_batch([aggregation_txn], self.signer)
+            result = self.submit_batch(batch)
+            
+            logger.info({
+                "message": "Aggregation request submitted successfully",
+                "result": str(result),
+                "node_id": node_id,
+                "workflow_id": workflow_id,
+                "round_number": round_number
+            })
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error creating aggregation request: {str(e)}")
+            raise
+
+    def create_two_phase_federated_transaction(self, training_data, workflow_id, node_id, 
+                                             iot_port, iot_public_key, trained_weights=None, 
+                                             phase="training", round_number=1):
+        """
+        Create transactions for two-phase federated learning flow.
+        Phase 1: Submit training data for local training (uses standard TrustMesh flow)
+        Phase 2: Submit trained model weights for aggregation (uses new aggregation-request-tp)
+        """
+        try:
+            if phase == "training":
+                logger.info(f"Phase 1: Submitting training data for node {node_id}")
+                # Use standard TrustMesh flow for training - no node_id needed
+                return self.create_and_send_transactions(
+                    iot_data=training_data,
+                    workflow_id=workflow_id,
+                    iot_port=iot_port,
+                    iot_public_key=iot_public_key
+                )
+                
+            elif phase == "aggregation":
+                if not trained_weights:
+                    raise ValueError("Trained weights are required for aggregation phase")
+                
+                logger.info(f"Phase 2: Submitting trained weights for aggregation for node {node_id}")
+                return self.create_aggregation_request(
+                    workflow_id=workflow_id,
+                    node_id=node_id,
+                    model_weights=trained_weights,
+                    round_number=round_number,
+                    metadata={
+                        "training_samples": len(training_data.get('x_train', [])) if training_data else 0,
+                        "node_classes": training_data.get('assigned_classes', []) if training_data else [],
+                        "training_timestamp": int(time.time())
+                    },
+                    iot_port=iot_port,
+                    iot_public_key=iot_public_key
+                )
+            else:
+                raise ValueError(f"Invalid phase: {phase}. Must be 'training' or 'aggregation'")
+                
+        except Exception as e:
+            logger.error(f"Error in two-phase federated transaction: {str(e)}")
             raise
 
 

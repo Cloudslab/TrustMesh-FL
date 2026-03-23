@@ -33,6 +33,9 @@ RUN pip install --no-cache-dir -r requirements.txt -f https://download.pytorch.o
 # Pre-download MNIST dataset to avoid runtime network issues
 RUN python -c "import os; from torchvision import datasets, transforms; print('Pre-downloading MNIST dataset...'); os.makedirs('/tmp/mnist', exist_ok=True); transform = transforms.Compose([transforms.ToTensor()]); train_dataset = datasets.MNIST(root='/tmp/mnist', train=True, download=True, transform=transform); test_dataset = datasets.MNIST(root='/tmp/mnist', train=False, download=True, transform=transform); print(f'MNIST dataset downloaded: {len(train_dataset)} train samples, {len(test_dataset)} test samples')"
 
+# Copy shared model module (copied into build context by build-project.sh)
+COPY shared/ ./shared/
+
 # Copy the client script
 COPY transaction_initiator/* ./transaction_initiator/
 COPY response_manager/* ./response_manager/

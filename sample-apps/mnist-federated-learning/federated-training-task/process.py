@@ -18,9 +18,12 @@ from typing import Dict, List, Any, Tuple
 # PyTorch for MNIST training
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
+
+import sys
+sys.path.insert(0, '/app')
+from shared.models.mnist_model import MNISTNet
 
 # Setup logging
 logging.basicConfig(
@@ -33,30 +36,6 @@ logger = logging.getLogger(__name__)
 NUM_CLASSES = 10
 EPOCHS_PER_ROUND = 3
 BATCH_SIZE = 32
-
-
-class MNISTNet(nn.Module):
-    """PyTorch CNN model for MNIST federated learning"""
-    def __init__(self, num_classes=10):
-        super(MNISTNet, self).__init__()
-        self.conv1 = nn.Conv2d(1, 32, kernel_size=3, padding=1)
-        self.pool1 = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.pool2 = nn.MaxPool2d(2, 2)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
-        self.flatten = nn.Flatten()
-        self.fc1 = nn.Linear(64 * 7 * 7, 64)  # 28x28 -> 14x14 -> 7x7 after pooling
-        self.fc2 = nn.Linear(64, num_classes)
-        self.dropout = nn.Dropout(0.2)
-        
-    def forward(self, x):
-        x = self.pool1(F.relu(self.conv1(x)))
-        x = self.pool2(F.relu(self.conv2(x)))
-        x = F.relu(self.conv3(x))
-        x = self.flatten(x)
-        x = self.dropout(F.relu(self.fc1(x)))
-        x = self.fc2(x)  # Return raw logits for CrossEntropyLoss
-        return x
 
 
 class MNISTFederatedTrainer:
@@ -284,7 +263,7 @@ class MNISTFederatedTrainer:
                 'round_number': round_number,
                 'assigned_classes': training_data.get('assigned_classes', []),
                 'training_timestamp': time.time(),
-                'samples_count': len(x_train),
+                'sample_count': len(x_train),
                 'global_weights_loaded': initial_weights is not None
             }
             
@@ -391,7 +370,7 @@ async def handle_client(reader, writer):
             'node_id': training_request.get('node_id', 'unknown'),
             'round_number': training_request.get('round_number', 1),
             'assigned_classes': training_request.get('assigned_classes', []),
-            'samples_count': training_request.get('samples_count', 0)
+            'sample_count': training_request.get('sample_count', 0)
         }
         
         # Debug logging to see the data structure

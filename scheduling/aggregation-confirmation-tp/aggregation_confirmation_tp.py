@@ -1,15 +1,13 @@
-import asyncio
 import hashlib
 import json
 import logging
 import os
-import ssl
+import sys
 import tempfile
 import time
 import traceback
 import numpy as np
 from typing import Dict, List, Any
-from concurrent.futures import ThreadPoolExecutor
 
 import torch
 import torch.nn as nn
@@ -21,8 +19,9 @@ from sawtooth_sdk.processor.exceptions import InvalidTransaction
 from sawtooth_sdk.processor.core import TransactionProcessor
 from ibmcloudant.cloudant_v1 import CloudantV1
 from ibm_cloud_sdk_core.authenticators import BasicAuthenticator
-from coredis import RedisCluster
-from coredis.exceptions import RedisError
+
+sys.path.insert(0, '/app')
+from shared.models.mnist_model import MNISTNet
 
 # CouchDB configuration (primary storage for validation dataset and model weights)
 COUCHDB_URL = f"https://{os.getenv('COUCHDB_HOST', 'couchdb-0.default.svc.cluster.local:6984')}"
@@ -34,14 +33,6 @@ COUCHDB_SSL_CA = os.getenv('COUCHDB_SSL_CA')
 COUCHDB_SSL_CERT = os.getenv('COUCHDB_SSL_CERT')
 COUCHDB_SSL_KEY = os.getenv('COUCHDB_SSL_KEY')
 
-# Redis configuration
-REDIS_HOST = os.getenv('REDIS_HOST', 'redis-cluster')
-REDIS_PORT = int(os.getenv('REDIS_PORT', '6379'))
-REDIS_PASSWORD = os.getenv('REDIS_PASSWORD')
-REDIS_SSL_CERT = os.getenv('REDIS_SSL_CERT')
-REDIS_SSL_KEY = os.getenv('REDIS_SSL_KEY')
-REDIS_SSL_CA = os.getenv('REDIS_SSL_CA')
-
 # Sawtooth configuration
 FAMILY_NAME = 'aggregation-confirmation'
 FAMILY_VERSION = '1.0'
@@ -52,7 +43,8 @@ WORKFLOW_NAMESPACE = hashlib.sha512('workflow-dependency'.encode()).hexdigest()[
 
 # Validation configuration
 VALIDATION_SEED = 42  # Fixed seed for deterministic validation
-MIN_ACCURACY_THRESHOLD = 0.1  # Minimum acceptable accuracy
+MIN_ACCURACY_THRESHOLD = 0.3  # Minimum acceptable accuracy (above random chance on MNIST)
+SKIP_VALIDATION = os.getenv('SKIP_VALIDATION', 'false').lower() == 'true'  # For overhead measurement only
 MAX_WEIGHT_MAGNITUDE = 10.0  # Maximum allowed weight magnitude
 VALIDATION_DATASET_DOC_ID = "mnist_validation_dataset"
 VALIDATION_METADATA_KEY = "mnist_validation_metadata"
@@ -62,30 +54,6 @@ MNIST_INPUT_SHAPE = (28, 28, 1)
 NUM_CLASSES = 10
 
 logger = logging.getLogger(__name__)
-
-
-class MNISTNet(nn.Module):
-    """PyTorch CNN model for MNIST (must match training task architecture)"""
-    def __init__(self, num_classes=10):
-        super(MNISTNet, self).__init__()
-        self.conv1 = nn.Conv2d(1, 32, kernel_size=3, padding=1)
-        self.pool1 = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.pool2 = nn.MaxPool2d(2, 2)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
-        self.flatten = nn.Flatten()
-        self.fc1 = nn.Linear(64 * 7 * 7, 64)  # 28x28 -> 14x14 -> 7x7 after pooling
-        self.fc2 = nn.Linear(64, num_classes)
-        self.dropout = nn.Dropout(0.2)
-        
-    def forward(self, x):
-        x = self.pool1(F.relu(self.conv1(x)))
-        x = self.pool2(F.relu(self.conv2(x)))
-        x = F.relu(self.conv3(x))
-        x = self.flatten(x)
-        x = self.dropout(F.relu(self.fc1(x)))
-        x = self.fc2(x)  # Return raw logits for CrossEntropyLoss
-        return x
 
 
 class AggregationConfirmationTransactionHandler(TransactionHandler):
@@ -106,64 +74,6 @@ class AggregationConfirmationTransactionHandler(TransactionHandler):
     def namespaces(self):
         # Must include all namespaces that this TP reads/writes to force serial execution
         return [CONFIRMATION_NAMESPACE, AGGREGATION_REQUEST_NAMESPACE, WORKFLOW_NAMESPACE]
-
-    def _initialize_redis(self):
-        logger.info("Starting Redis initialization")
-        temp_files = []
-        try:
-            ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl.CERT_NONE
-            ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
-            ssl_context.maximum_version = ssl.TLSVersion.TLSv1_3
-
-            if REDIS_SSL_CA:
-                ca_file = tempfile.NamedTemporaryFile(delete=False, mode='w+', suffix='.crt')
-                ca_file.write(REDIS_SSL_CA)
-                ca_file.flush()
-                temp_files.append(ca_file.name)
-                ssl_context.load_verify_locations(cafile=ca_file.name)
-            else:
-                logger.warning("REDIS_SSL_CA is empty or not set")
-
-            if REDIS_SSL_CERT and REDIS_SSL_KEY:
-                cert_file = tempfile.NamedTemporaryFile(delete=False, mode='w+', suffix='.crt')
-                key_file = tempfile.NamedTemporaryFile(delete=False, mode='w+', suffix='.key')
-                cert_file.write(REDIS_SSL_CERT)
-                key_file.write(REDIS_SSL_KEY)
-                cert_file.flush()
-                key_file.flush()
-                temp_files.extend([cert_file.name, key_file.name])
-                ssl_context.load_cert_chain(
-                    certfile=cert_file.name,
-                    keyfile=key_file.name
-                )
-            else:
-                logger.warning("REDIS_SSL_CERT or REDIS_SSL_KEY is empty or not set")
-
-            logger.info(f"Attempting to connect to Redis cluster at {REDIS_HOST}:{REDIS_PORT}")
-            self.redis = RedisCluster(
-                host=REDIS_HOST,
-                port=REDIS_PORT,
-                password=REDIS_PASSWORD,
-                ssl=True,
-                ssl_context=ssl_context,
-                decode_responses=True
-            )
-
-            # Redis not needed - validation only requires CouchDB
-            logger.info("Connected to Redis cluster successfully")
-        except Exception as e:
-            logger.error(f"Failed to connect to Redis: {str(e)}")
-            logger.error(traceback.format_exc())
-            raise
-        finally:
-            for file_path in temp_files:
-                try:
-                    os.unlink(file_path)
-                    logger.debug(f"Temporary file deleted: {file_path}")
-                except Exception as e:
-                    logger.warning(f"Failed to delete temporary file {file_path}: {str(e)}")
 
     def _initialize_couchdb(self):
         """Initialize CouchDB connection following existing patterns"""
@@ -365,30 +275,29 @@ class AggregationConfirmationTransactionHandler(TransactionHandler):
         try:
             # Extract model weights from CouchDB using document IDs from contributions
             node_weights = {}
-            total_samples = 0
-            
+
             for node_id in participating_nodes:
                 if node_id not in node_contributions:
                     raise InvalidTransaction(f"Missing contribution from node {node_id}")
-                
+
                 contribution = node_contributions[node_id]
-                
+
                 # Fetch model weights from CouchDB using stored document ID
                 weights_doc_id = contribution.get('weights_doc_id')
                 if not weights_doc_id:
                     raise InvalidTransaction(f"Missing weights document ID for node {node_id}")
-                
+
                 # Retrieve weights from CouchDB synchronously
                 logger.info(f"Fetching weights for node {node_id} from CouchDB: {weights_doc_id}")
                 doc = self._get_couchdb_document(weights_doc_id)
                 if not doc:
                     logger.error(f"Failed to fetch document {weights_doc_id} from CouchDB")
                     raise InvalidTransaction(f"Model weights document not found: {weights_doc_id}")
-                
+
                 model_weights = doc.get('model_weights')
                 if not model_weights:
                     raise InvalidTransaction(f"No model weights found in document: {weights_doc_id}")
-                
+
                 # Verify content hash for integrity
                 expected_hash = contribution.get('weights_hash')
                 if expected_hash:
@@ -398,15 +307,11 @@ class AggregationConfirmationTransactionHandler(TransactionHandler):
                         if computed_hash != expected_hash:
                             raise InvalidTransaction(f"Model weights integrity check failed for {node_id}")
                         logger.warning(f"Stored hash mismatch but computed hash matches for {node_id}")
-                
+
                 node_weights[node_id] = model_weights
-                
-                # Use sample count from metadata for weighted averaging
-                samples = contribution.get('metadata', {}).get('sample_count', 1)
-                total_samples += samples
-            
+
             # Compute expected FedAvg weights
-            expected_weights = self._compute_fedavg(node_weights, participating_nodes, total_samples)
+            expected_weights = self._compute_fedavg(node_weights, participating_nodes, node_contributions)
             
             # Verify provided weights match expected (within tolerance)
             if not self._weights_match(expected_weights, provided_weights, tolerance=1e-6):
@@ -419,34 +324,49 @@ class AggregationConfirmationTransactionHandler(TransactionHandler):
             logger.error(f"FedAvg verification failed: {e}")
             raise InvalidTransaction(f"FedAvg verification failed: {e}")
 
-    def _compute_fedavg(self, node_weights: Dict, participating_nodes: List[str], total_samples: int) -> Dict:
-        """Compute FedAvg aggregation"""
+    def _compute_fedavg(self, node_weights: Dict, participating_nodes: List[str], node_contributions: Dict) -> Dict:
+        """Compute FedAvg aggregation with sample-weighted averaging"""
         logger.info(f"Computing FedAvg for {len(participating_nodes)} nodes")
-        
+
         aggregated_weights = {}
-        
+
         # Get first node's weights structure
         first_node = participating_nodes[0]
         weight_structure = node_weights[first_node]
-        
+
         # Initialize aggregated weights
         for layer_name in weight_structure:
             aggregated_weights[layer_name] = np.zeros_like(np.array(weight_structure[layer_name]))
-        
+
+        # Compute per-node sample counts for weighted averaging
+        sample_counts = {}
+        total_samples = 0
+        for node_id in participating_nodes:
+            contribution = node_contributions.get(node_id, {})
+            samples = contribution.get('metadata', {}).get('sample_count', 0)
+            sample_counts[node_id] = samples
+            total_samples += samples
+
+        use_sample_weighting = total_samples > 0
+        if not use_sample_weighting:
+            logger.warning("No sample counts available, falling back to equal weighting")
+
         # Weighted averaging
         for node_id in participating_nodes:
             node_weight_dict = node_weights[node_id]
-            # Assume equal weighting for simplicity (can be made sample-weighted)
-            weight_factor = 1.0 / len(participating_nodes)
-            
+            if use_sample_weighting:
+                weight_factor = sample_counts[node_id] / total_samples
+            else:
+                weight_factor = 1.0 / len(participating_nodes)
+
             for layer_name in node_weight_dict:
                 layer_weights = np.array(node_weight_dict[layer_name])
                 aggregated_weights[layer_name] += weight_factor * layer_weights
-        
+
         # Convert back to lists for JSON serialization
         for layer_name in aggregated_weights:
             aggregated_weights[layer_name] = aggregated_weights[layer_name].tolist()
-        
+
         logger.info("FedAvg computation completed")
         return aggregated_weights
 
@@ -474,11 +394,20 @@ class AggregationConfirmationTransactionHandler(TransactionHandler):
     def _validate_aggregated_model(self, aggregated_weights: Dict, aggregation_id: str) -> Dict:
         """Perform deterministic validation of aggregated model using distributed MNIST validation dataset"""
         logger.info(f"Validating aggregated model for {aggregation_id}")
-        
+
+        if SKIP_VALIDATION:
+            logger.warning(f"SKIP_VALIDATION enabled — bypassing all validation checks for {aggregation_id}")
+            return {
+                'is_valid': True,
+                'reason': 'Validation skipped (SKIP_VALIDATION=true)',
+                'validation_score': 1.0,
+                'checks_performed': []
+            }
+
         try:
             # Set deterministic seed for reproducible validation
             np.random.seed(VALIDATION_SEED)
-            
+
             validation_result = {
                 'is_valid': True,
                 'reason': 'Validation passed',
@@ -723,12 +652,12 @@ class AggregationConfirmationTransactionHandler(TransactionHandler):
             validation_data = self._get_validation_dataset_sync()
             
             if not validation_data:
-                logger.warning("Validation dataset not available, skipping MNIST validation")
+                logger.error("Validation dataset not available in CouchDB")
                 return {
                     'name': 'mnist_validation',
-                    'passed': True,  # Pass if dataset not available (graceful degradation)
-                    'score': 0.5,
-                    'details': {'warning': 'Validation dataset not available'}
+                    'passed': False,
+                    'score': 0.0,
+                    'details': {'error': 'Validation dataset not available in CouchDB'}
                 }
             
             # Create model architecture (must match training task)
@@ -845,79 +774,6 @@ class AggregationConfirmationTransactionHandler(TransactionHandler):
             logger.error(f"Error retrieving validation dataset from CouchDB: {e}")
             return None
 
-    async def _get_validation_dataset(self) -> Dict:
-        """Retrieve validation dataset from CouchDB"""
-        try:
-            # Get validation dataset from CouchDB
-            stored_doc = self.couchdb_client.get_document(db=COUCHDB_DB, doc_id=VALIDATION_DATASET_DOC_ID).get_result()
-            if not stored_doc:
-                logger.warning("Validation dataset not found in CouchDB")
-                return None
-            
-            # Verify data integrity with proper dtype restoration
-            metadata = stored_doc['metadata']
-            
-            # Restore arrays with original dtypes to ensure hash consistency
-            x_dtype = metadata.get('x_dtype', 'float32')  # Default to float32 for backward compatibility
-            y_dtype = metadata.get('y_dtype', 'int64')    # Default to int64 for backward compatibility
-            
-            x_data = np.array(stored_doc['x_data'], dtype=x_dtype)
-            y_data = np.array(stored_doc['y_data'], dtype=y_dtype)
-            
-            # Check hashes for data integrity
-            data_hash = hashlib.sha256(x_data.tobytes()).hexdigest()
-            expected_hash = metadata['data_hash']
-            if data_hash != expected_hash:
-                logger.error(f"Validation dataset hash mismatch - expected: {expected_hash[:16]}..., got: {data_hash[:16]}...")
-                logger.error(f"Dataset shape: {x_data.shape}, x_dtype: {x_data.dtype}, y_dtype: {y_data.dtype}")
-                logger.error("Data integrity check failed - dataset may be corrupted")
-                return None
-            
-            logger.info(f"Retrieved validation dataset from CouchDB: {len(x_data)} samples")
-            return {
-                'x_data': stored_doc['x_data'],
-                'y_data': stored_doc['y_data'],
-                'metadata': metadata
-            }
-            
-        except Exception as e:
-            logger.error(f"Error retrieving validation dataset from CouchDB: {e}")
-            return None
-    
-    async def _fetch_model_weights_from_couchdb(self, doc_id: str, expected_hash: str = None) -> Dict:
-        """Fetch model weights from CouchDB with integrity verification"""
-        try:
-            logger.info(f"Fetching model weights from CouchDB: {doc_id}")
-            
-            # Use thread pool to make sync CouchDB call async
-            with ThreadPoolExecutor() as executor:
-                future = executor.submit(self._get_couchdb_document, doc_id)
-                doc = future.result()
-            
-            if not doc:
-                raise InvalidTransaction(f"Model weights document not found: {doc_id}")
-            
-            model_weights = doc.get('model_weights')
-            if not model_weights:
-                raise InvalidTransaction(f"No model weights found in document: {doc_id}")
-            
-            # Verify content hash for integrity if provided
-            if expected_hash:
-                stored_hash = doc.get('content_hash')
-                if stored_hash != expected_hash:
-                    # Compute hash from weights to double-check
-                    computed_hash = hashlib.sha256(json.dumps(model_weights, sort_keys=True).encode()).hexdigest()
-                    if computed_hash != expected_hash:
-                        raise InvalidTransaction(f"Model weights integrity check failed for {doc_id}")
-                    logger.warning(f"Stored hash mismatch but computed hash matches for {doc_id}")
-            
-            logger.info(f"Successfully retrieved model weights from CouchDB: {doc_id}")
-            return model_weights
-            
-        except Exception as e:
-            logger.error(f"Error fetching model weights from CouchDB {doc_id}: {e}")
-            raise InvalidTransaction(f"Failed to fetch model weights: {e}")
-    
     def _get_couchdb_document(self, doc_id: str) -> Dict:
         """Synchronous method to get document from CouchDB"""
         try:

@@ -26,6 +26,9 @@ RUN apt-get update && apt-get install -y \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
+# Copy shared model module (copied into build context by build-project.sh)
+COPY shared/ ./shared/
+
 # Copy application code
 COPY process.py .
 

@@ -55,7 +55,11 @@ class AggregationRequestTransactionHandler(TransactionHandler):
         self.redis = None
         self.couchdb_client = None
         self.couchdb_certs = []
-        self.loop = asyncio.get_event_loop()
+        try:
+            self.loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
         self._initialize_redis()
         self._initialize_couchdb()
 
@@ -77,8 +81,6 @@ class AggregationRequestTransactionHandler(TransactionHandler):
         temp_files = []
         try:
             ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl.CERT_NONE
             ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
             ssl_context.maximum_version = ssl.TLSVersion.TLSv1_3
 
@@ -89,7 +91,9 @@ class AggregationRequestTransactionHandler(TransactionHandler):
                 temp_files.append(ca_file.name)
                 ssl_context.load_verify_locations(cafile=ca_file.name)
             else:
-                logger.warning("REDIS_SSL_CA is empty or not set")
+                logger.warning("REDIS_SSL_CA is empty or not set - disabling certificate verification for development")
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
 
             if REDIS_SSL_CERT and REDIS_SSL_KEY:
                 cert_file = tempfile.NamedTemporaryFile(delete=False, mode='w+', suffix='.crt')
@@ -303,8 +307,6 @@ class AggregationRequestTransactionHandler(TransactionHandler):
                 ("aggregator_node", aggregator_node),
                 ("weights_doc_id", f"{aggregation_id}_{node_id}_weights"),
                 ("weights_hash", hashlib.sha256(json.dumps(model_weights, sort_keys=True).encode()).hexdigest()),
-                ("model_weights", json.dumps(model_weights)),  # Include model weights in event for aggregator
-                ("metadata", json.dumps(payload.get('metadata', {}))),
                 ("timestamp", str(int(time.time())))
             ]
         )
@@ -357,6 +359,11 @@ class AggregationRequestTransactionHandler(TransactionHandler):
             
             # Check if the round is still collecting (not locked or confirmed)
             if round_data.get('status') == 'collecting':
+                # Check if the round has expired
+                created_at = round_data.get('created_at', 0)
+                if created_at and (int(time.time()) - created_at) > (AGGREGATION_TIMEOUT * 2):
+                    logger.info(f"Aggregation round {active_aggregation_id} has expired (created_at: {created_at}) - creating new round")
+                    return None
                 logger.info(f"Found existing active aggregation round: {round_data['aggregation_id']} (global round {round_data.get('global_round_number', 'unknown')})")
                 return round_data
             else:
@@ -395,6 +402,7 @@ class AggregationRequestTransactionHandler(TransactionHandler):
                         'source_public_key': initial_payload.get('source_public_key')
                     }
                 },
+                'created_at': int(time.time()),
                 'min_nodes_required': MIN_NODES_FOR_AGGREGATION,
                 'expected_nodes': []  # Time-based aggregation - any number of nodes can participate
             }
@@ -469,36 +477,39 @@ class AggregationRequestTransactionHandler(TransactionHandler):
             raise InvalidTransaction(f"Failed to add node to aggregation round: {e}")
 
 
-    def _get_next_global_round_number(self, context, workflow_id):
+    def _get_next_global_round_number(self, context, workflow_id, max_retries=3):
         """Get the next global round number for this workflow"""
-        try:
-            # Check for existing global round counter
-            counter_address = self._make_global_round_counter_address(workflow_id)
-            state_entries = context.get_state([counter_address])
-            
-            if state_entries:
-                counter_data = json.loads(state_entries[0].data.decode())
-                current_round = counter_data.get('current_global_round', 0)
-                next_round = current_round + 1
-            else:
-                next_round = 1
-            
-            # Update the global round counter
-            counter_data = {
-                'workflow_id': workflow_id,
-                'current_global_round': next_round
-            }
-            
-            context.set_state({
-                counter_address: json.dumps(counter_data).encode()
-            })
-            
-            logger.info(f"Generated global round number {next_round} for workflow {workflow_id}")
-            return next_round
-            
-        except Exception as e:
-            logger.error(f"Error getting next global round number: {e}")
-            return 1  # Fallback to round 1
+        counter_address = self._make_global_round_counter_address(workflow_id)
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                state_entries = context.get_state([counter_address])
+
+                if state_entries:
+                    counter_data = json.loads(state_entries[0].data.decode())
+                    current_round = counter_data.get('current_global_round', 0)
+                    next_round = current_round + 1
+                else:
+                    next_round = 1
+
+                # Update the global round counter
+                counter_data = {
+                    'workflow_id': workflow_id,
+                    'current_global_round': next_round
+                }
+
+                context.set_state({
+                    counter_address: json.dumps(counter_data).encode()
+                })
+
+                logger.info(f"Generated global round number {next_round} for workflow {workflow_id}")
+                return next_round
+
+            except Exception as e:
+                logger.warning(f"Attempt {attempt}/{max_retries} failed to get next global round number: {e}")
+                if attempt == max_retries:
+                    logger.error(f"All {max_retries} attempts exhausted for global round number")
+                    raise InvalidTransaction(f"Failed to get next global round number after {max_retries} attempts: {e}")
 
     def _get_aggregation_round(self, context, aggregation_id):
         """Get aggregation round data by ID"""

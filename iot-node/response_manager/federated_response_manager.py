@@ -74,7 +74,14 @@ class FederatedResponseManager:
             # Start an authenticator for this context (same as IoTDeviceManager)
             self.auth = ThreadAuthenticator(self.zmq_context)
             self.auth.start()
-            self.auth.configure_curve(domain='*', location=zmq.auth.CURVE_ALLOW_ANY)
+            # Use authorized keys directory if available, otherwise allow any (dev mode)
+            curve_keys_dir = os.getenv('CURVE_AUTHORIZED_KEYS_DIR')
+            if curve_keys_dir and os.path.isdir(curve_keys_dir):
+                self.auth.configure_curve(domain='*', location=curve_keys_dir)
+                logger.info(f"CURVE authentication using authorized keys from {curve_keys_dir}")
+            else:
+                self.auth.configure_curve(domain='*', location=zmq.auth.CURVE_ALLOW_ANY)
+                logger.warning("CURVE authentication allows any key (no CURVE_AUTHORIZED_KEYS_DIR set)")
             
             self.zmq_socket = self.zmq_context.socket(zmq.REP)
             # Configure CURVE authentication (same as IoTDeviceManager)

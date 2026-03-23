@@ -1,0 +1,26 @@
+experiment:
+  name: byzantine-noise-1
+  description: Single noise attacker
+  runs: 3  # statistical repetitions
+
+cluster:
+  iot_nodes: 5
+  compute_nodes: 4
+
+federated_learning:
+  workflow_id: "fl-experiment"
+  max_rounds: 5
+  non_iid_alpha: 0.5
+  total_nodes: 5
+  aggregation_timeout: 180
+  min_nodes_for_aggregation: 1
+
+byzantine:
+  enabled: true
+  byzantine_node_count: 1
+  attack_mode: random_noise
+  # Byzantine nodes are always the highest-indexed IoT nodes
+  # e.g., with 5 nodes and 1 byzantine: iot-4 is the attacker
+
+validation:
+  skip_validation: false

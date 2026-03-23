@@ -22,8 +22,18 @@ import os
 import sys
 import random
 
+from byzantine.attack_simulator import ByzantineAttackSimulator
+
 # Add federated learning extension to path
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'federated-learning-extension'))
+
+# Add shared models path
+sys.path.insert(0, '/app')
+from shared.models.mnist_model import MNISTNet
+
+# Add FL timing instrumentation
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'observation-metrics', 'fl-timing'))
+from fl_timer import FLTimer
 
 from transaction_initiator.transaction_initiator import transaction_creator
 from response_manager.response_manager import IoTDeviceManager
@@ -39,33 +49,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-TOTAL_NODES = 5
+TOTAL_NODES = int(os.getenv('TOTAL_NODES', '5'))
+NON_IID_ALPHA = float(os.getenv('NON_IID_ALPHA', '0.5'))  # Dirichlet alpha: lower = more non-IID, higher = more IID
 FEDERATED_ROUND_INTERVAL = 180  # 3 minutes between rounds
 SAMPLES_PER_NODE = 2000
-
-
-class MNISTNet(nn.Module):
-    """PyTorch CNN model for MNIST (must match training task architecture)"""
-    def __init__(self, num_classes=10):
-        super(MNISTNet, self).__init__()
-        self.conv1 = nn.Conv2d(1, 32, kernel_size=3, padding=1)
-        self.pool1 = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.pool2 = nn.MaxPool2d(2, 2)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
-        self.flatten = nn.Flatten()
-        self.fc1 = nn.Linear(64 * 7 * 7, 64)  # 28x28 -> 14x14 -> 7x7 after pooling
-        self.fc2 = nn.Linear(64, num_classes)
-        self.dropout = nn.Dropout(0.2)
-        
-    def forward(self, x):
-        x = self.pool1(F.relu(self.conv1(x)))
-        x = self.pool2(F.relu(self.conv2(x)))
-        x = F.relu(self.conv3(x))
-        x = self.flatten(x)
-        x = self.dropout(F.relu(self.fc1(x)))
-        x = self.fc2(x)  # Return raw logits for CrossEntropyLoss
-        return x
 
 
 class MNISTFederatedNode:
@@ -76,7 +63,7 @@ class MNISTFederatedNode:
     in federated learning rounds while preserving data privacy.
     """
     
-    def __init__(self, node_id: str, device_manager: IoTDeviceManager, test_split: float = 0.2):
+    def __init__(self, node_id: str, device_manager: IoTDeviceManager, test_split: float = 0.2, byzantine_mode: str = 'none'):
         self.node_id = node_id
         self.device_manager = device_manager
         self.node_index = self._extract_node_index(node_id)
@@ -84,6 +71,9 @@ class MNISTFederatedNode:
         self.test_split = test_split
         self.data_partition = None
         self.local_model = None  # For local validation
+        self.byzantine_simulator = None
+        if byzantine_mode != 'none':
+            self.byzantine_simulator = ByzantineAttackSimulator(attack_mode=byzantine_mode, seed=42 + self.node_index)
         
         # Validate node configuration
         if self.node_index >= TOTAL_NODES:
@@ -91,7 +81,10 @@ class MNISTFederatedNode:
         
         # Load MNIST data partition with train/test split
         self._load_data_partition()
-        
+
+        # Initialize FL performance timer
+        self.timer = FLTimer(node_id=node_id, component="iot-simulation")
+
         logger.info(f"Initialized MNIST Federated Node {node_id}")
         logger.info(f"Node index: {self.node_index}")
         logger.info(f"Assigned digit classes: {self.assigned_classes}")
@@ -106,10 +99,11 @@ class MNISTFederatedNode:
         raise ValueError(f"Could not extract node index from: {node_id}")
     
     def _get_assigned_classes(self) -> List[int]:
-        """Get the 2 digit classes assigned to this node"""
-        # Node 0: [0,1], Node 1: [2,3], Node 2: [4,5], Node 3: [6,7], Node 4: [8,9]
-        start_class = self.node_index * 2
-        return [start_class, start_class + 1]
+        """Get the digit classes this node will primarily see.
+        With Dirichlet partitioning, all classes may appear but with skewed distribution.
+        This returns the classes with highest representation for logging purposes.
+        """
+        return list(range(10))  # All classes possible with Dirichlet
     
     def _load_data_partition(self):
         """Load MNIST data partition for this node"""
@@ -159,26 +153,58 @@ class MNISTFederatedNode:
             raise
     
     def _create_node_partition(self, x_train: np.ndarray, y_train: np.ndarray):
-        """Create deterministic data partition for this node"""
-        # Set seed for reproducibility
-        np.random.seed(42 + self.node_index)
-        
-        # Get indices for assigned classes
-        indices = []
-        for digit_class in self.assigned_classes:
-            class_indices = np.where(y_train == digit_class)[0]
-            indices.extend(class_indices)
-        
-        # Sort and select samples
-        indices = sorted(indices)
-        x_partition = x_train[indices]
-        y_partition = y_train[indices]
-        
+        """Create non-IID data partition using Dirichlet distribution.
+
+        Alpha controls the degree of non-IID:
+        - alpha -> 0: Each node gets samples from only 1-2 classes (extreme non-IID)
+        - alpha = 0.5: Moderate non-IID (recommended for FL experiments)
+        - alpha = 1.0: Mild non-IID
+        - alpha -> inf: IID (uniform distribution across all nodes)
+        """
+        np.random.seed(42)  # Global seed for reproducibility across all nodes
+
+        num_classes = 10
+
+        # Generate Dirichlet distribution for each class
+        class_indices = {c: np.where(y_train == c)[0] for c in range(num_classes)}
+
+        # For each class, split indices among nodes using Dirichlet
+        node_indices = [[] for _ in range(TOTAL_NODES)]
+
+        for c in range(num_classes):
+            indices = class_indices[c]
+            np.random.shuffle(indices)
+
+            # Draw proportions from Dirichlet distribution
+            proportions = np.random.dirichlet(np.repeat(NON_IID_ALPHA, TOTAL_NODES))
+
+            # Convert proportions to actual counts
+            proportions = (proportions * len(indices)).astype(int)
+            # Assign remaining samples to last node to handle rounding
+            proportions[-1] = len(indices) - proportions[:-1].sum()
+
+            # Split indices according to proportions
+            start = 0
+            for node_idx in range(TOTAL_NODES):
+                end = start + proportions[node_idx]
+                node_indices[node_idx].extend(indices[start:end].tolist())
+                start = end
+
+        # Get this node's partition
+        my_indices = np.array(node_indices[self.node_index])
+
         # Shuffle with node-specific seed
-        perm = np.random.permutation(len(x_partition))
-        x_partition = x_partition[perm]
-        y_partition = y_partition[perm]
-        
+        np.random.seed(42 + self.node_index)
+        np.random.shuffle(my_indices)
+
+        x_partition = x_train[my_indices]
+        y_partition = y_train[my_indices]
+
+        # Log the actual class distribution
+        unique, counts = np.unique(y_partition, return_counts=True)
+        dist = dict(zip(unique.tolist(), counts.tolist()))
+        logger.info(f"Dirichlet partition (alpha={NON_IID_ALPHA}): {dist}")
+
         return x_partition, y_partition
     
     def _calculate_class_distribution(self, y_data: np.ndarray) -> Dict[str, int]:
@@ -275,17 +301,19 @@ class MNISTFederatedNode:
             logger.info(f"Timestamp: {datetime.now().isoformat()}")
             logger.info(f"{'='*60}")
             
-            # Prepare training data payload (subset for this round)
-            samples_per_round = min(500, len(self.data_partition['x_train']) // 2)  # Use subset
-            start_idx = (round_number - 1) * samples_per_round % len(self.data_partition['x_train'])
-            end_idx = min(start_idx + samples_per_round, len(self.data_partition['x_train']))
-            
-            round_x_data = self.data_partition['x_train'][start_idx:end_idx]
-            round_y_data = self.data_partition['y_train'][start_idx:end_idx]
+            # Prepare training data payload (random subset for this round)
+            np.random.seed(42 + self.node_index * 100 + round_number)
+            all_indices = np.arange(len(self.data_partition['x_train']))
+            np.random.shuffle(all_indices)
+            samples_per_round = min(500, len(self.data_partition['x_train']))
+            selected_indices = all_indices[:samples_per_round]
+
+            round_x_data = [self.data_partition['x_train'][i] for i in selected_indices]
+            round_y_data = [self.data_partition['y_train'][i] for i in selected_indices]
             
             # Get initial weights for this round
             logger.info(f"📊 DATA PREPARATION: Preparing training data for round {round_number}")
-            logger.info(f"   • Data slice: indices {start_idx}-{end_idx} ({len(round_x_data)} samples)")
+            logger.info(f"   • Randomly sampled {len(round_x_data)} samples for this round")
             logger.info(f"   • Assigned classes: {self.assigned_classes}")
             logger.info(f"   • Class distribution in training data: {dict(zip(*np.unique(round_y_data, return_counts=True)))}")
             
@@ -300,11 +328,10 @@ class MNISTFederatedNode:
                 'y_train': round_y_data,
                 'initial_weights': initial_weights,  # Include initial weights
                 'assigned_classes': self.assigned_classes,
-                'samples_count': len(round_x_data),
+                'sample_count': len(round_x_data),
                 'timestamp': datetime.now().isoformat(),
                 'training_metadata': {
-                    'start_idx': start_idx,
-                    'end_idx': end_idx,
+                    'samples_selected': len(round_x_data),
                     'total_node_samples': self.data_partition['train_samples'],
                     'class_distribution': self.data_partition['train_distribution']
                 }
@@ -479,7 +506,12 @@ class MNISTFederatedNode:
                 logger.error(f"   • Expected weights from training phase but received empty/None")
                 logger.error(f"   • Round: {round_number} | Node: {self.node_id}")
                 return False
-            
+
+            # Apply Byzantine attack if configured
+            if self.byzantine_simulator:
+                logger.warning(f"APPLYING BYZANTINE ATTACK: {self.byzantine_simulator.attack_mode}")
+                trained_weights = self.byzantine_simulator.apply(trained_weights)
+
             logger.info(f"📊 WEIGHT ANALYSIS: Analyzing trained weights for aggregation")
             logger.info(f"   • Weight layers received: {len(trained_weights)}")
             logger.info(f"   • Layer names: {list(trained_weights.keys())}")
@@ -599,6 +631,7 @@ class MNISTFederatedNode:
             
             for round_num in range(1, max_rounds + 1):
                 round_start_time = time.time()
+                self.timer.start("round_total", round_num)
                 logger.info(f"\n{'='*80}")
                 logger.info(f"🔥 FEDERATED LEARNING ROUND {round_num}/{max_rounds} STARTED")
                 logger.info(f"{'='*80}")
@@ -623,8 +656,10 @@ class MNISTFederatedNode:
                 logger.info(f"   • Objective: Submit training data to TrustMesh for processing")
                 logger.info(f"   • Expected outcome: Receive trained model weights")
                 
+                self.timer.start("tx_submit_training", round_num)
                 schedule_id = self.submit_training_phase(workflow_id, round_num, fed_response_manager)
-                
+                self.timer.stop("tx_submit_training", round_num)
+
                 if not schedule_id:
                     logger.error(f"❌ ROUND {round_num} ABORTED - Training phase submission failed")
                     logger.error(f"   • Unable to submit training data to TrustMesh")
@@ -638,9 +673,11 @@ class MNISTFederatedNode:
                 logger.info(f"   • Waiting for compute node to process training data...")
                 
                 wait_start_time = time.time()
+                self.timer.start("training_wait", round_num)
                 trained_weights = await fed_response_manager.wait_for_training_completion(
                     workflow_id, schedule_id, timeout=600  # 2 minutes timeout
                 )
+                self.timer.stop("training_wait", round_num)
                 wait_duration = time.time() - wait_start_time
                 
                 if not trained_weights:
@@ -661,8 +698,10 @@ class MNISTFederatedNode:
                 logger.info(f"   • Objective: Submit trained weights for global aggregation")
                 logger.info(f"   • Expected outcome: Contribute to FedAvg aggregation process")
                 
+                self.timer.start("tx_submit_aggregation", round_num)
                 aggregation_success = self.submit_aggregation_phase(workflow_id, round_num, trained_weights, fed_response_manager)
-                
+                self.timer.stop("tx_submit_aggregation", round_num)
+
                 if not aggregation_success:
                     logger.error(f"❌ AGGREGATION SUBMISSION FAILED")
                     logger.error(f"   • Round: {round_num}")
@@ -681,7 +720,9 @@ class MNISTFederatedNode:
                 logger.info(f"   • Waiting for next aggregated model (any global round)...")
                 
                 aggregation_wait_start = time.time()
+                self.timer.start("aggregation_wait", round_num)
                 aggregated_weights = await fed_response_manager.wait_for_next_aggregated_model(workflow_id, timeout=600)
+                self.timer.stop("aggregation_wait", round_num)
                 aggregation_wait_duration = time.time() - aggregation_wait_start
                 
                 if aggregated_weights:
@@ -700,7 +741,9 @@ class MNISTFederatedNode:
                     logger.info(f"   • Test classes: {self.assigned_classes}")
                     
                     validation_start = time.time()
+                    self.timer.start("local_validation", round_num)
                     local_accuracy = self.evaluate_model_locally(aggregated_weights)
+                    self.timer.stop("local_validation", round_num, extra={"accuracy": local_accuracy})
                     validation_duration = time.time() - validation_start
                     
                     logger.info(f"✅ LOCAL VALIDATION COMPLETED")
@@ -724,6 +767,7 @@ class MNISTFederatedNode:
                 
                 # Brief pause between rounds
                 round_duration = time.time() - round_start_time
+                self.timer.stop("round_total", round_num)
                 logger.info(f"\n✅ ROUND {round_num} COMPLETED")
                 logger.info(f"   • Total round duration: {round_duration:.1f}s")
                 logger.info(f"   • Phases completed: Training → Aggregation → Validation")
@@ -892,6 +936,14 @@ def main():
         help='Maximum number of federated rounds (default: 5)'
     )
     
+    parser.add_argument(
+        '--byzantine-mode',
+        type=str,
+        default='none',
+        choices=['none', 'random_noise', 'sign_flip', 'scaling'],
+        help='Byzantine attack mode (default: none)'
+    )
+
     logger.info(f"📝 ARGS: Parsing command line arguments")
     args = parser.parse_args()
     logger.info(f"   • Workflow ID: {args.workflow_id}")
@@ -948,7 +1000,8 @@ def main():
         
         fl_node = MNISTFederatedNode(
             node_id=node_id,
-            device_manager=device_manager
+            device_manager=device_manager,
+            byzantine_mode=args.byzantine_mode
         )
         
         node_init_duration = time.time() - startup_time

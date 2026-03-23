@@ -8,6 +8,17 @@ DOCKER_USERNAME=murtazahr
 # Make sure user is in the correct working directory
 cd "$WORK_DIR" || exit
 
+# Copy shared module into components that need it for Docker build context
+SHARED_TARGETS=(
+    "iot-node"
+    "sample-apps/mnist-federated-learning/federated-training-task"
+    "scheduling/aggregation-confirmation-tp"
+)
+echo "Copying shared module to component build contexts..."
+for target in "${SHARED_TARGETS[@]}"; do
+    cp -r shared "$target/"
+done
+
 # Build peer-registry-tp image
 docker build -t $DOCKER_USERNAME/peer-registry-tp:latest ./peer-registry/peer-registry-tp
 # Build docker-image-tp image
@@ -77,6 +88,12 @@ docker push $DOCKER_USERNAME/validation-dataset-distributor:latest
 # Push MNIST Federated Learning images
 echo "Pushing MNIST Federated Learning applications..."
 docker push $DOCKER_USERNAME/federated-training-task:latest
+
+# Clean up shared module copies from component directories
+echo "Cleaning up shared module copies..."
+for target in "${SHARED_TARGETS[@]}"; do
+    rm -rf "$target/shared"
+done
 
 echo "All images built and pushed to registry successfully"
 echo "MNIST Federated Learning application files created in ./sample-apps/mnist-federated-learning/deployment/"

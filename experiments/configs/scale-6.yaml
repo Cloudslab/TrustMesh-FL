@@ -1,0 +1,26 @@
+experiment:
+  name: scale-6
+  description: Scalability 6 nodes
+  runs: 3  # statistical repetitions
+
+cluster:
+  iot_nodes: 6
+  compute_nodes: 4
+
+federated_learning:
+  workflow_id: "fl-experiment"
+  max_rounds: 5
+  non_iid_alpha: 0.5
+  total_nodes: 6
+  aggregation_timeout: 180
+  min_nodes_for_aggregation: 1
+
+byzantine:
+  enabled: false
+  byzantine_node_count: 0
+  attack_mode: none
+  # Byzantine nodes are always the highest-indexed IoT nodes
+  # e.g., with 5 nodes and 2 byzantine: iot-3 and iot-4 are attackers
+
+validation:
+  skip_validation: false

@@ -65,8 +65,13 @@ def initialize_redis():
     temp_files = []
     try:
         ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
+        if REDIS_SSL_CA:
+            ssl_context.check_hostname = False  # Cluster IPs won't match cert hostnames
+            ssl_context.verify_mode = ssl.CERT_REQUIRED
+        else:
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+            logger.warning("SSL certificate verification disabled - no CA certificate provided")
         ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
         ssl_context.maximum_version = ssl.TLSVersion.TLSv1_3
 
@@ -101,7 +106,8 @@ def initialize_redis():
             decode_responses=True
         )
 
-        asyncio.get_event_loop().run_until_complete(redis_instance.ping())
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(redis_instance.ping())
         logger.info("Connected to Redis cluster successfully")
 
         return redis_instance
@@ -130,7 +136,7 @@ class FederatedAggregator:
         
         # Create a dedicated event loop for this aggregator if one doesn't exist
         try:
-            self.loop = asyncio.get_event_loop()
+            self.loop = asyncio.get_running_loop()
         except RuntimeError:
             # No event loop in current thread, create a new one
             self.loop = asyncio.new_event_loop()
@@ -605,9 +611,9 @@ class FederatedAggregator:
                 else:
                     logger.error(f"❌ Missing contribution metadata from {node_id}")
             
-            # Compute FedAvg
+            # Compute FedAvg (sample-weighted, matching confirmation TP)
             logger.info(f"🔧 Computing FedAvg with {len(node_weights)} nodes")
-            aggregated_weights = self._compute_fedavg(node_weights, participating_nodes)
+            aggregated_weights = self._compute_fedavg(node_weights, participating_nodes, node_contributions)
             
             # Store aggregated weights before submitting confirmation
             aggregation_info['aggregated_weights'] = aggregated_weights
@@ -632,48 +638,65 @@ class FederatedAggregator:
             logger.error(f"❌ Error performing aggregation: {e}")
             await self._handle_aggregation_failure(aggregation_id, str(e))
 
-    def _compute_fedavg(self, node_weights: Dict[str, Dict], participating_nodes: List[str]) -> Dict:
-        """Compute FedAvg aggregation
-        
-        Supports single-node aggregation: when only 1 node participates, 
-        weight_factor = 1.0, so the model weights are returned unchanged.
+    def _compute_fedavg(self, node_weights: Dict[str, Dict], participating_nodes: List[str],
+                        node_contributions: Dict = None) -> Dict:
+        """Compute sample-weighted FedAvg aggregation (must match confirmation TP logic).
+
+        Uses per-node sample counts from node_contributions metadata for weighted
+        averaging. Falls back to equal weighting if sample counts are unavailable.
         """
         logger.info(f"Computing FedAvg for {len(participating_nodes)} nodes")
-        
+
         if not participating_nodes or not node_weights:
             raise ValueError("No participating nodes or weights provided for aggregation")
-        
+
         aggregated_weights = {}
-        
+
         # Get first node's weights structure
         first_node = participating_nodes[0]
         weight_structure = node_weights.get(first_node)
-        
+
         if not weight_structure:
             raise ValueError(f"No weights found for node {first_node}")
-        
+
         # Initialize aggregated weights
         for layer_name in weight_structure:
             aggregated_weights[layer_name] = np.zeros_like(np.array(weight_structure[layer_name]))
-        
-        # Weighted averaging (equal weights for simplicity)
+
+        # Compute per-node sample counts for weighted averaging
+        sample_counts = {}
+        total_samples = 0
+        if node_contributions:
+            for node_id in participating_nodes:
+                contribution = node_contributions.get(node_id, {})
+                samples = contribution.get('metadata', {}).get('sample_count', 0)
+                sample_counts[node_id] = samples
+                total_samples += samples
+
+        use_sample_weighting = total_samples > 0
+        if use_sample_weighting:
+            logger.info(f"Using sample-weighted FedAvg (total samples: {total_samples})")
+        else:
+            logger.info(f"Using equal-weighted FedAvg (no sample counts available)")
+
         if len(participating_nodes) == 1:
             logger.info("Single-node aggregation: returning model weights unchanged")
-        else:
-            logger.info(f"Multi-node aggregation: averaging across {len(participating_nodes)} nodes")
-            
+
         for node_id in participating_nodes:
             node_weight_dict = node_weights[node_id]
-            weight_factor = 1.0 / len(participating_nodes)
-            
+            if use_sample_weighting:
+                weight_factor = sample_counts[node_id] / total_samples
+            else:
+                weight_factor = 1.0 / len(participating_nodes)
+
             for layer_name in node_weight_dict:
                 layer_weights = np.array(node_weight_dict[layer_name])
                 aggregated_weights[layer_name] += weight_factor * layer_weights
-        
+
         # Convert back to lists for JSON serialization
         for layer_name in aggregated_weights:
             aggregated_weights[layer_name] = aggregated_weights[layer_name].tolist()
-        
+
         logger.info("FedAvg computation completed")
         return aggregated_weights
 

@@ -1095,13 +1095,13 @@ TEST_APP_DIR=$(pwd)/sample-apps
 
 # Building docker image for test docker applications
 cd "$TEST_APP_DIR/cold-chain-monitoring/task1_process_sensor_data" || exit
-docker build -t process-sensor-data:latest -f Dockerfile .
+docker build --no-cache -t process-sensor-data:latest -f Dockerfile .
 
 cd "$TEST_APP_DIR/cold-chain-monitoring/task2_detect_anomalies" || exit
-docker build -t anomaly-detection:latest -f Dockerfile .
+docker build --no-cache -t anomaly-detection:latest -f Dockerfile .
 
 cd "$TEST_APP_DIR/cold-chain-monitoring/task3_generate_alerts" || exit
-docker build -t generate-alerts:latest -f Dockerfile .
+docker build --no-cache -t generate-alerts:latest -f Dockerfile .
 
 # Make sure user is in the correct working directory
 cd "$WORK_DIR" || exit

@@ -19,6 +19,11 @@ for target in "${SHARED_TARGETS[@]}"; do
     cp -r shared "$target/"
 done
 
+# Copy FL timer module into iot-node build context
+echo "Copying FL timer module to iot-node build context..."
+mkdir -p iot-node/fl-timing
+cp observation-metrics/fl-timing/*.py iot-node/fl-timing/
+
 # Build peer-registry-tp image
 docker build -t $DOCKER_USERNAME/peer-registry-tp:latest ./peer-registry/peer-registry-tp
 # Build docker-image-tp image
@@ -94,6 +99,7 @@ echo "Cleaning up shared module copies..."
 for target in "${SHARED_TARGETS[@]}"; do
     rm -rf "$target/shared"
 done
+rm -rf iot-node/fl-timing
 
 echo "All images built and pushed to registry successfully"
 echo "MNIST Federated Learning application files created in ./sample-apps/mnist-federated-learning/deployment/"

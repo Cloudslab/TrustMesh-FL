@@ -31,8 +31,8 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'federated-learnin
 sys.path.insert(0, '/app')
 from shared.models.mnist_model import MNISTNet
 
-# Add FL timing instrumentation
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'observation-metrics', 'fl-timing'))
+# Add FL timing instrumentation (fl-timing/ copied into build context by build-project.sh)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'fl-timing'))
 from fl_timer import FLTimer
 
 from transaction_initiator.transaction_initiator import transaction_creator

@@ -39,6 +39,8 @@ COPY shared/ ./shared/
 # Copy the client script
 COPY transaction_initiator/* ./transaction_initiator/
 COPY response_manager/* ./response_manager/
+COPY byzantine/ ./byzantine/
+COPY fl-timing/ ./fl-timing/
 COPY *.py ./
 
 # Federated learning is now integrated into core transaction processors

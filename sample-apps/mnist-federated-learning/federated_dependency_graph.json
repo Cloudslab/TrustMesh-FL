@@ -8,9 +8,9 @@
     "max_rounds": 5,
     "round_timeout": 300
   },
-  "start": "federated-training-task",
+  "start": "02393ede-808c-4e5c-86e0-a9f1fe3a256a",
   "nodes": {
-    "federated-training-task": {
+    "02393ede-808c-4e5c-86e0-a9f1fe3a256a": {
       "type": "federated_training",
       "description": "Local model training on MNIST partition and return trained weights",
       "execution_mode": "standard",
@@ -20,7 +20,7 @@
   "level_info": {
     "0": [
       {
-        "app_id": "federated-training-task",
+        "app_id": "02393ede-808c-4e5c-86e0-a9f1fe3a256a",
         "dependencies": [],
         "resource_requirements": {
           "cpu": 2,

@@ -1324,11 +1324,33 @@ wait_for_job mnist-validation-dataset-distributor
 echo "Deploying blockchain network with PBFT nodes..."
 kubectl apply -f kubernetes-manifests/generated/blockchain-network-deployment.yaml
 
+# Part 8: Wait for compute node pods to be ready, then configure inner Docker storage driver
+echo "Waiting for compute node pods to be ready..."
+for ((i=0; i<num_compute_nodes; i++)); do
+    echo "Waiting for pbft-$i pod..."
+    kubectl wait --for=condition=Ready pod -l app=pbft-$i --timeout=300s 2>/dev/null || true
+done
+
+echo "Configuring inner Docker storage driver (vfs) on compute nodes..."
+echo "  (overlayfs cannot nest inside container overlay mounts — vfs is required for DinD)"
+for ((i=0; i<num_compute_nodes; i++)); do
+    POD=$(kubectl get pods -l app=pbft-$i -o name 2>/dev/null | sed 's|pod/||' | head -1)
+    if [ -n "$POD" ]; then
+        echo "  Configuring $POD..."
+        kubectl exec "$POD" -c compute-node -- bash -c \
+            'echo "{\"insecure-registries\": [\"sawtooth-registry:5000\"], \"storage-driver\": \"vfs\"}" > /etc/docker/daemon.json && pkill dockerd' \
+            2>/dev/null || echo "    WARNING: Failed to configure $POD (may not be ready yet)"
+        sleep 3  # Give dockerd time to restart
+    fi
+done
+echo "Inner Docker storage driver configured on all compute nodes."
+
+echo ""
 echo "Script execution completed successfully."
 echo ""
 echo "🎉 TrustMesh network deployed with federated learning support!"
 echo ""
 echo "Next steps for MNIST Federated Learning:"
-echo "1. Build and deploy applications: Run the instructions in RUN_MNIST_FEDERATED_LEARNING.md"
-echo "2. Verify federated schedule TP is running on compute nodes: kubectl logs pbft-0-<pod-id> -c federated-schedule-tp"
-echo "3. Check compute nodes are ready: kubectl get pods -l name=pbft-0"
+echo "1. Deploy applications: Follow the instructions in RUN_MNIST_FEDERATED_LEARNING.md"
+echo "2. Verify compute nodes are ready: kubectl get pods"
+echo "3. Check aggregation TPs: kubectl logs <pbft-pod> -c aggregation-request-tp"

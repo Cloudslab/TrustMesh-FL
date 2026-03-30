@@ -91,6 +91,15 @@ def hash_and_push_docker_image(tar_path):
                 content_digest = line['aux']['Digest']
                 logger.info(f"Image push completed successfully. Content digest: {content_digest}")
                 break
+            elif 'status' in line and 'digest:' in line.get('status', ''):
+                # Fallback: parse digest from status string
+                # Format: "latest: digest: sha256:abc123... size: 856"
+                import re
+                match = re.search(r'digest:\s*(sha256:[a-f0-9]+)', line['status'])
+                if match:
+                    content_digest = match.group(1)
+                    logger.info(f"Image push completed successfully. Content digest: {content_digest}")
+                    break
 
         if not content_digest:
             logger.error("Image push completed but digest not found")

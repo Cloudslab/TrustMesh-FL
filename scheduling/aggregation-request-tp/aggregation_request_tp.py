@@ -81,6 +81,9 @@ class AggregationRequestTransactionHandler(TransactionHandler):
         temp_files = []
         try:
             ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+            # Disable hostname checking — Redis cluster nodes are reached by pod IP,
+            # which won't match the certificate's CN/SAN hostnames
+            ssl_context.check_hostname = False
             ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
             ssl_context.maximum_version = ssl.TLSVersion.TLSv1_3
 
@@ -92,7 +95,6 @@ class AggregationRequestTransactionHandler(TransactionHandler):
                 ssl_context.load_verify_locations(cafile=ca_file.name)
             else:
                 logger.warning("REDIS_SSL_CA is empty or not set - disabling certificate verification for development")
-                ssl_context.check_hostname = False
                 ssl_context.verify_mode = ssl.CERT_NONE
 
             if REDIS_SSL_CERT and REDIS_SSL_KEY:

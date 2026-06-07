@@ -245,10 +245,10 @@ class MNISTValidationDatasetDistributor:
             if not stored_doc:
                 raise ValueError("Validation dataset not found in CouchDB")
             
-            # Verify data integrity
-            x_data = np.array(stored_doc['x_data'])
-            y_data = np.array(stored_doc['y_data'])
+            # Verify data integrity — must restore original dtypes or tobytes() produces different hashes
             metadata = stored_doc['metadata']
+            x_data = np.array(stored_doc['x_data'], dtype=metadata.get('x_dtype', 'float32'))
+            y_data = np.array(stored_doc['y_data'], dtype=metadata.get('y_dtype', 'int64'))
             
             # Check hashes
             data_hash = hashlib.sha256(x_data.tobytes()).hexdigest()

@@ -1,14 +1,16 @@
-# TrustMesh-FL Journal Extension: Implementation Plan
+# TrustMesh-FL: Implementation Plan
 
 ## Context
 
 TrustMesh was published at IEEE ICSA 2025 as a blockchain-enabled distributed computing framework for trustless IoT. This repository extends it with consensus-validated federated learning, where FedAvg is re-computed by every PBFT validator before acceptance — a genuine differentiator over blockchain+FL papers that only log hashes on-chain.
 
+This work is a **standalone paper** (not a journal extension of the ICSA paper).
+
 **Target venue**: IEEE Transactions on Parallel and Distributed Systems (TPDS). This means experiments should emphasize **system architecture, overhead analysis, and scalability** — TPDS reviewers care about rigorous systems evaluation, not just ML accuracy curves.
 
 **Cluster**: 10+ physical K3s nodes available — full experiment matrix is feasible.
 
-The goal is to implement the experiment infrastructure needed to produce a rigorous journal paper. The system's FL protocol is already functional; what's missing is attack simulation, instrumentation, automation, and visualization.
+The goal is to implement the experiment infrastructure needed to produce a rigorous paper. The system's FL protocol is already functional; what's missing is attack simulation, instrumentation, automation, and visualization.
 
 ## Decisions
 

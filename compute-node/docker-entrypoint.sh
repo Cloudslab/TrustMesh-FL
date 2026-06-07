@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e
 
+# Write daemon config before starting dockerd — storage-driver can only be set at startup, not via SIGHUP
+echo '{"insecure-registries": ["sawtooth-registry:5000"], "storage-driver": "vfs"}' > /etc/docker/daemon.json
+
 # Start the Docker daemon
 dockerd &
 
@@ -9,14 +12,6 @@ while ! docker info >/dev/null 2>&1; do
     echo "Waiting for Docker daemon to start..."
     sleep 1
 done
-
-# Add the registry as an insecure registry
-echo '{"insecure-registries": ["sawtooth-registry:5000"]}' > /etc/docker/daemon.json
-# shellcheck disable=SC2046
-kill -SIGHUP $(pidof dockerd)
-
-# Wait for Docker to reload its configuration
-sleep 5
 
 # Run node_startup_script.py if IS_NEW_ADDITION is true
 if [ "$IS_NEW_ADDITION" = "true" ]; then

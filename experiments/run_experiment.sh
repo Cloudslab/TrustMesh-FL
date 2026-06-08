@@ -43,15 +43,15 @@ echo "Byzantine: $BYZANTINE_ENABLED (count=$BYZANTINE_COUNT, mode=$ATTACK_MODE)"
 echo "Skip Validation: $SKIP_VALIDATION"
 echo "========================================"
 
-# Discover IoT pods
-IOT_PODS=($(kubectl get pods -l app=iot -o name | sed 's|pod/||'))
+# Discover IoT pods (deployed with label name=iot-0, name=iot-1, ...)
+IOT_PODS=($(kubectl get pods -o name | grep -E "^pod/iot-[0-9]" | sed 's|pod/||' | sort))
 if [ ${#IOT_PODS[@]} -lt "$IOT_NODES" ]; then
     echo "WARNING: Found ${#IOT_PODS[@]} IoT pods but config expects $IOT_NODES"
 fi
 echo "Discovered IoT pods: ${IOT_PODS[*]}"
 
-# Discover compute node pods (for skip_validation)
-COMPUTE_PODS=($(kubectl get pods -l app=compute-node -o name | sed 's|pod/||'))
+# Discover compute node pods — pbft pods contain aggregation-confirmation-tp container
+COMPUTE_PODS=($(kubectl get pods -o name | grep -E "^pod/pbft-[0-9]" | sed 's|pod/||' | sort))
 echo "Discovered compute pods: ${COMPUTE_PODS[*]}"
 
 # Set environment variables on all IoT pods

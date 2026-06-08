@@ -73,7 +73,10 @@ class AggregationRequestTransactionHandler(TransactionHandler):
         except RuntimeError:
             self.loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.loop)
-        self._initialize_redis()
+        # NOTE: Redis is no longer used by this TP (aggregator election now reads the
+        # peer-registry index from blockchain state). Initializing it here used to crash
+        # the whole TP at startup whenever Redis was briefly unreachable, taking aggregation
+        # down entirely. Do not re-add a hard Redis dependency in apply().
         self._initialize_couchdb()
         # Background CouchDB writer. apply() runs in the consensus hot path on every
         # validator and MUST NOT block on network I/O (a synchronous CouchDB PUT here

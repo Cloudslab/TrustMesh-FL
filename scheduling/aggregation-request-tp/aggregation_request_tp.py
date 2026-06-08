@@ -48,9 +48,13 @@ CONFIRMATION_NAMESPACE = hashlib.sha512('aggregation-confirmation'.encode()).hex
 # Federated learning configuration
 AGGREGATION_TIMEOUT = int(os.getenv('AGGREGATION_TIMEOUT', '180'))  # 3 minutes default
 MIN_NODES_FOR_AGGREGATION = int(os.getenv('MIN_NODES_FOR_AGGREGATION', '1'))  # Minimum 1 node for aggregation
-# Number of compute nodes, used for deterministic round-robin aggregator election.
-# Must match the deployed compute-node count (set via deploy env); default 4.
-COMPUTE_NODE_COUNT = int(os.getenv('COMPUTE_NODE_COUNT', '4'))
+# Peer-registry membership index, read from state for deterministic aggregator election.
+# Address derivation MUST match peer-registry-tp exactly.
+PEER_REGISTRY_NAMESPACE = hashlib.sha512('peer-registry'.encode()).hexdigest()[:6]
+PEER_REGISTRY_INDEX_ADDRESS = PEER_REGISTRY_NAMESPACE + hashlib.sha512('__node_index__'.encode()).hexdigest()[:64]
+# A compute node whose last peer-registry update is older than this (seconds) is treated
+# as gone and excluded from aggregator election. Uses the deterministic payload timestamp.
+NODE_STALENESS_THRESHOLD = int(os.getenv('NODE_STALENESS_THRESHOLD', '300'))
 
 logger = logging.getLogger(__name__)
 
@@ -346,7 +350,7 @@ class AggregationRequestTransactionHandler(TransactionHandler):
             # node — live load-based election diverges across validators and breaks
             # consensus. Round number must be computed first since election depends on it.
             global_round_number = self._get_next_global_round_number(context, workflow_id)
-            aggregator_node = self._select_aggregator(global_round_number)
+            aggregator_node = self._select_aggregator(context, global_round_number, request_ts)
             # Use deterministic aggregation ID based on workflow and global round only
             aggregation_id = self._make_deterministic_aggregation_id(workflow_id, global_round_number)
 
@@ -616,20 +620,36 @@ class AggregationRequestTransactionHandler(TransactionHandler):
         active_key = f"{workflow_id}_active_round"
         return AGGREGATION_NAMESPACE + hashlib.sha512(active_key.encode()).hexdigest()[:64]
 
-    def _select_aggregator(self, global_round_number):
-        """Deterministically elect the aggregator: round-robin by global round number.
+    def _select_aggregator(self, context, global_round_number, now_ts):
+        """Deterministically elect the aggregator via round-robin over the LIVE compute-node
+        set recorded in peer-registry blockchain state.
 
-        apply() runs on every validator and MUST be deterministic. The previous
-        implementation read live Redis resource metrics, so each validator saw a
-        different snapshot and could elect a different node -> divergent state ->
-        PBFT state-root mismatch -> the aggregation block never commits -> no event ->
-        no aggregation. Round-robin over a fixed compute-node count is identical on
-        every validator and spreads aggregation evenly across rounds.
+        apply() runs on every validator and MUST be deterministic, so we read committed
+        state (identical everywhere) instead of live Redis. The set adapts to membership:
+        nodes that join start writing to peer-registry (added to the index); nodes that
+        leave/crash stop writing, go stale, and are excluded. now_ts is the deterministic
+        per-transaction payload timestamp used for the staleness check.
         """
-        index = (int(global_round_number) - 1) % COMPUTE_NODE_COUNT
-        aggregator = f"sawtooth-compute-node-{index}"
+        entries = context.get_state([PEER_REGISTRY_INDEX_ADDRESS])
+        if not entries or not entries[0].data:
+            raise InvalidTransaction("Peer-registry node index empty; cannot elect aggregator yet")
+
+        index = json.loads(entries[0].data.decode())
+        # Compute nodes only (IoT nodes don't run the resource registrar)
+        candidates = {nid: int(ts) for nid, ts in index.items()
+                      if nid.startswith('sawtooth-compute-node')}
+        if not candidates:
+            raise InvalidTransaction("No compute nodes in peer-registry index")
+
+        # Prefer nodes seen within the staleness window; fall back to all known nodes if
+        # none look fresh (so a registry-wide update lag can't wedge aggregation entirely).
+        fresh = sorted(nid for nid, ts in candidates.items()
+                       if now_ts and (now_ts - ts) <= NODE_STALENESS_THRESHOLD)
+        pool = fresh if fresh else sorted(candidates.keys())
+
+        aggregator = pool[(int(global_round_number) - 1) % len(pool)]
         logger.info(f"Elected aggregator {aggregator} for global round {global_round_number} "
-                    f"(round-robin over {COMPUTE_NODE_COUNT} compute nodes)")
+                    f"(round-robin over {len(pool)} live node(s): {pool})")
         return aggregator
 
     @staticmethod

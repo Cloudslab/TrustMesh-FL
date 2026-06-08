@@ -600,8 +600,6 @@ items:"
               env:
                 - name: VALIDATOR_URL
                   value: \"tcp://$service_name:4004\"
-                - name: COMPUTE_NODE_COUNT
-                  value: \"$num_compute_nodes\"
                 - name: REDIS_HOST
                   value: \"redis-cluster\"
                 - name: REDIS_PORT

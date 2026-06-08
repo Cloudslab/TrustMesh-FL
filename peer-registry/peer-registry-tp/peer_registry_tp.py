@@ -12,6 +12,10 @@ logger = logging.getLogger(__name__)
 FAMILY_NAME = 'peer-registry'
 FAMILY_VERSION = '1.0'
 NAMESPACE = hashlib.sha512(FAMILY_NAME.encode()).hexdigest()[:6]
+# Deterministic membership index: node_id -> last_seen timestamp. Lets other TPs
+# enumerate live nodes from state (Sawtooth apply() can't prefix-scan a namespace).
+# Must match the reader in aggregation-request-tp exactly.
+INDEX_ADDRESS = NAMESPACE + hashlib.sha512('__node_index__'.encode()).hexdigest()[:64]
 
 
 class PeerRegistryTransactionHandler(TransactionHandler):
@@ -55,6 +59,21 @@ class PeerRegistryTransactionHandler(TransactionHandler):
             # Update the state
             state_data = json.dumps(current_state).encode()
             context.set_state({state_key: state_data})
+
+            # Maintain the deterministic membership index (node_id -> last_seen ts). The
+            # timestamp comes from the payload (identical on every validator), so this stays
+            # consensus-safe. INDEX_ADDRESS is under NAMESPACE, already in inputs/outputs.
+            latest_ts = max((int(u.get('timestamp', 0)) for u in updates), default=0)
+            index_entries = context.get_state([INDEX_ADDRESS])
+            if index_entries and index_entries[0].data:
+                index = json.loads(index_entries[0].data.decode())
+            else:
+                index = {}
+            new_ts = max(int(index.get(node_id, 0)), latest_ts)
+            if new_ts != index.get(node_id):
+                index[node_id] = new_ts
+                context.set_state({INDEX_ADDRESS: json.dumps(index).encode()})
+                logger.info(f"Updated membership index for {node_id} (last_seen={new_ts})")
 
             logger.info(f"Updated state for node {node_id} with {len(updates)} new resource updates")
 

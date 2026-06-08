@@ -31,6 +31,9 @@ DOCKER_IMAGE_NAMESPACE = hashlib.sha512('docker-image'.encode()).hexdigest()[:6]
 AGGREGATION_NAMESPACE = hashlib.sha512(AGGREGATION_REQUEST_FAMILY_NAME.encode()).hexdigest()[:6]
 # Include confirmation namespace to ensure serial execution with aggregation-confirmation-tp
 CONFIRMATION_NAMESPACE = hashlib.sha512('aggregation-confirmation'.encode()).hexdigest()[:6]
+# Read-only: aggregation-request-tp reads the peer-registry node index from state to elect
+# the aggregator deterministically, so this namespace must be declared as a tx input.
+PEER_REGISTRY_NAMESPACE = hashlib.sha512('peer-registry'.encode()).hexdigest()[:6]
 
 PRIVATE_KEY_FILE = os.getenv('SAWTOOTH_PRIVATE_KEY', '/root/.sawtooth/keys/client.priv')
 # Get comma-separated list of validator URLs from environment variable
@@ -276,8 +279,9 @@ class TransactionCreator:
             if round_number is not None:
                 aggregation_payload["round_number"] = round_number
             
-            # Include all namespaces that aggregation TPs declare to force serial execution
-            aggregation_inputs = [AGGREGATION_NAMESPACE, WORKFLOW_NAMESPACE, CONFIRMATION_NAMESPACE]
+            # Include all namespaces that aggregation TPs declare to force serial execution.
+            # PEER_REGISTRY_NAMESPACE is read-only (aggregator election reads the node index).
+            aggregation_inputs = [AGGREGATION_NAMESPACE, WORKFLOW_NAMESPACE, CONFIRMATION_NAMESPACE, PEER_REGISTRY_NAMESPACE]
             aggregation_outputs = [AGGREGATION_NAMESPACE, CONFIRMATION_NAMESPACE]
             
             aggregation_txn = create_transaction(

@@ -36,10 +36,14 @@ def load_private_key(key_file):
         raise IOError(f"Failed to load private key from {key_file}: {str(e)}") from e
 
 
-def create_workflow(dependency_graph):
+def create_workflow(dependency_graph, workflow_id=None):
     logger.info("Creating new workflow")
-    workflow_id = str(uuid.uuid4())
-    logger.debug(f"Generated workflow ID: {workflow_id}")
+    if workflow_id:
+        workflow_id = str(workflow_id).strip()
+        logger.info(f"Using provided workflow ID: {workflow_id}")
+    else:
+        workflow_id = str(uuid.uuid4())
+        logger.debug(f"Generated workflow ID: {workflow_id}")
     result = _send_workflow_transaction(workflow_id, dependency_graph)
     return workflow_id, result
 
@@ -153,12 +157,14 @@ def _process_validator_response(future_result):
 
 def main():
     logger.info("Workflow client started")
-    if len(sys.argv) != 2:
+    if len(sys.argv) not in (2, 3):
         logger.error("Incorrect number of arguments")
-        print("Usage: python workflow_client.py <dependency_graph_file>")
+        print("Usage: python workflow_client.py <dependency_graph_file> [workflow_id]")
+        print("  workflow_id is optional; a random UUID is generated when omitted.")
         sys.exit(1)
 
     dependency_graph_file = sys.argv[1]
+    requested_workflow_id = sys.argv[2] if len(sys.argv) == 3 else None
     logger.info(f"Reading dependency graph from file: {dependency_graph_file}")
     try:
         with open(dependency_graph_file, 'r') as f:
@@ -171,7 +177,7 @@ def main():
         logger.error(f"Failed to read dependency graph file: {str(e)}")
         sys.exit(1)
 
-    workflow_id, result = create_workflow(dependency_graph)
+    workflow_id, result = create_workflow(dependency_graph, requested_workflow_id)
     print(f"Workflow creation result:")
     print(f"Workflow ID: {workflow_id}")
     print(f"Status: {result}")

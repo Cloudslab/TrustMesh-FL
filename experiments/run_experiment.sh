@@ -46,7 +46,9 @@ echo "========================================"
 # Discover IoT pods (deployed with label name=iot-0, name=iot-1, ...)
 IOT_PODS=($(kubectl get pods -o name | grep -E "^pod/iot-[0-9]" | sed 's|pod/||' | sort))
 if [ ${#IOT_PODS[@]} -lt "$IOT_NODES" ]; then
-    echo "WARNING: Found ${#IOT_PODS[@]} IoT pods but config expects $IOT_NODES"
+    echo "ERROR: Found ${#IOT_PODS[@]} IoT pods but config expects $IOT_NODES. Aborting."
+    echo "       (Empty/short discovery is what produced stray '_simulation.log' files before.)"
+    exit 1
 fi
 echo "Discovered IoT pods: ${IOT_PODS[*]}"
 
@@ -86,7 +88,15 @@ for run in $(seq 1 "$RUNS"); do
     # Launch FL simulation on each IoT node
     for i in $(seq 0 $(( IOT_NODES - 1 ))); do
         pod="${IOT_PODS[$i]}"
-        LOG_FILE="$RUN_DIR/logs/${pod}_simulation.log"
+        if [ -z "$pod" ]; then
+            echo "  WARNING: no pod at index $i; skipping (would have written '_simulation.log')"
+            continue
+        fi
+        # Stable per-node filename from the node label (iot-N), NOT the full pod name.
+        # The pod suffix changes every (re)deploy, so using it accumulated one stale file
+        # per deploy in the same run dir. The label is stable, so reruns overwrite cleanly.
+        node_label=$(echo "$pod" | grep -oE 'iot-[0-9]+')
+        LOG_FILE="$RUN_DIR/logs/${node_label}_simulation.log"
 
         ENV_VARS="TOTAL_NODES=$TOTAL_NODES_VAL NON_IID_ALPHA=$NON_IID_ALPHA AGGREGATION_TIMEOUT=$AGG_TIMEOUT MIN_NODES_FOR_AGGREGATION=$MIN_NODES"
 

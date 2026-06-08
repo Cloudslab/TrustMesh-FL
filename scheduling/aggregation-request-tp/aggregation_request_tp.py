@@ -3,8 +3,10 @@ import hashlib
 import json
 import logging
 import os
+import queue
 import ssl
 import tempfile
+import threading
 import time
 import traceback
 
@@ -62,6 +64,45 @@ class AggregationRequestTransactionHandler(TransactionHandler):
             asyncio.set_event_loop(self.loop)
         self._initialize_redis()
         self._initialize_couchdb()
+        # Background CouchDB writer. apply() runs in the consensus hot path on every
+        # validator and MUST NOT block on network I/O (a synchronous CouchDB PUT here
+        # stalls block commit and breaks event delivery). So weight tensors are handed
+        # to this daemon thread and persisted off the hot path.
+        self._weight_write_queue = queue.Queue()
+        self._weight_writer_thread = threading.Thread(
+            target=self._weight_writer_loop, name="couchdb-weight-writer", daemon=True
+        )
+        self._weight_writer_thread.start()
+
+    def _weight_writer_loop(self):
+        """Drain the weight-write queue and persist tensors to CouchDB off-thread."""
+        while True:
+            doc_id, model_weights, node_id, aggregation_id = self._weight_write_queue.get()
+            try:
+                self._store_model_weights_with_retry(doc_id, model_weights, node_id, aggregation_id)
+            except Exception as e:
+                logger.error(f"Background weight write crashed for {doc_id}: {e}")
+            finally:
+                self._weight_write_queue.task_done()
+
+    def _store_model_weights_with_retry(self, doc_id, model_weights, node_id, aggregation_id,
+                                        max_attempts=5, base_delay=2):
+        """Persist weights to CouchDB with bounded exponential backoff on transient failure.
+
+        The aggregator only needs the doc to exist with matching content, so a 409
+        conflict (already written by another validator) counts as success — that is
+        handled inside _store_model_weights_in_couchdb.
+        """
+        for attempt in range(1, max_attempts + 1):
+            result = self._store_model_weights_in_couchdb(doc_id, model_weights, node_id, aggregation_id)
+            if result and result.get('success'):
+                return result
+            delay = min(base_delay ** attempt, 15)
+            logger.warning(f"Weight write attempt {attempt}/{max_attempts} failed for {doc_id}; "
+                           f"retrying in {delay}s")
+            time.sleep(delay)
+        logger.error(f"Gave up persisting weights for {doc_id} after {max_attempts} attempts")
+        return None
 
     @property
     def family_name(self):
@@ -308,8 +349,18 @@ class AggregationRequestTransactionHandler(TransactionHandler):
         # Get the global round number from the aggregation record
         aggregation_round = existing_round if existing_round else self._get_aggregation_round(context, aggregation_id)
         global_round_number = aggregation_round.get('global_round_number', 1)
-        
-        # Emit aggregation request event with model weights for aggregator to store in CouchDB
+
+        # Hand the weight tensors to the background writer (off the consensus hot path).
+        # apply() stays I/O-free; only the doc-id + hash go on-chain (state + event).
+        weights_doc_id = f"{aggregation_id}_{node_id}_weights"
+        weights_hash = hashlib.sha256(json.dumps(model_weights, sort_keys=True).encode()).hexdigest()
+        self._weight_write_queue.put((weights_doc_id, model_weights, node_id, aggregation_id))
+
+        # Emit aggregation request event. apply() must stay free of blocking I/O
+        # (CouchDB writes here stall block commit and break event delivery), and the
+        # weight tensors must NOT travel on-chain — only the doc-id + hash. The weights
+        # live in CouchDB (written off-chain by the submitting IoT node); the aggregator
+        # fetches them by doc-id when performing FedAvg.
         context.add_event(
             event_type="aggregation-request",
             attributes=[
@@ -318,8 +369,8 @@ class AggregationRequestTransactionHandler(TransactionHandler):
                 ("node_id", node_id),
                 ("global_round_number", str(global_round_number)),
                 ("aggregator_node", aggregator_node),
-                ("weights_doc_id", f"{aggregation_id}_{node_id}_weights"),
-                ("weights_hash", hashlib.sha256(json.dumps(model_weights, sort_keys=True).encode()).hexdigest()),
+                ("weights_doc_id", weights_doc_id),
+                ("weights_hash", weights_hash),
                 ("timestamp", str(int(time.time())))
             ]
         )
@@ -398,12 +449,6 @@ class AggregationRequestTransactionHandler(TransactionHandler):
             content_hash = hashlib.sha256(json.dumps(initial_weights, sort_keys=True).encode()).hexdigest()
 
             logger.info(f"Prepared model weights metadata for {initial_node_id}: {initial_weights_doc_id}")
-
-            # Persist the actual weight tensors to CouchDB; blockchain holds metadata only.
-            # The aggregator fetches these docs by id when performing FedAvg.
-            self._store_model_weights_in_couchdb(
-                initial_weights_doc_id, initial_weights, initial_node_id, aggregation_id
-            )
             
             round_data = {
                 'aggregation_id': aggregation_id,
@@ -472,12 +517,6 @@ class AggregationRequestTransactionHandler(TransactionHandler):
             content_hash = hashlib.sha256(json.dumps(model_weights, sort_keys=True).encode()).hexdigest()
 
             logger.info(f"Prepared model weights metadata for {node_id}: {weights_doc_id}")
-
-            # Persist the actual weight tensors to CouchDB; blockchain holds metadata only.
-            # The aggregator fetches these docs by id when performing FedAvg.
-            self._store_model_weights_in_couchdb(
-                weights_doc_id, model_weights, node_id, aggregation_id
-            )
             
             # Add node contribution metadata (no weights in blockchain)
             round_data['participating_nodes'].append(node_id)

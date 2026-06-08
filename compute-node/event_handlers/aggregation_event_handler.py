@@ -301,36 +301,49 @@ class FederatedAggregator:
         """Generate blockchain address for aggregation request"""
         return AGGREGATION_REQUEST_NAMESPACE + hashlib.sha512(aggregation_id.encode()).hexdigest()[:64]
     
-    async def _fetch_model_weights_from_couchdb(self, doc_id: str) -> Dict:
-        """Fetch model weights from CouchDB"""
-        try:
-            # Get document from CouchDB
-            with ThreadPoolExecutor() as executor:
-                future = executor.submit(self._get_couchdb_document, doc_id)
-                doc = future.result()
-                
-            if not doc:
-                logger.error(f"Document {doc_id} not found in CouchDB")
-                return None
-                
-            # Verify content hash for integrity
-            model_weights = doc.get('model_weights')
-            stored_hash = doc.get('content_hash')
-            
-            if model_weights and stored_hash:
-                computed_hash = hashlib.sha256(json.dumps(model_weights, sort_keys=True).encode()).hexdigest()
-                if computed_hash == stored_hash:
-                    return model_weights
-                else:
-                    logger.error(f"Content hash mismatch for {doc_id}")
+    async def _fetch_model_weights_from_couchdb(self, doc_id: str,
+                                               max_attempts: int = 6, retry_delay: float = 5.0) -> Dict:
+        """Fetch model weights from CouchDB, retrying if the doc isn't visible yet.
+
+        The aggregation-request-tp persists weights to CouchDB asynchronously, off the
+        consensus path, so a node's weight doc can briefly lag behind the blockchain
+        event/round state. The 180s collection timer normally absorbs this, but we
+        retry here as well so a slow or restarted writer can't drop a contributor.
+        """
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with ThreadPoolExecutor() as executor:
+                    future = executor.submit(self._get_couchdb_document, doc_id)
+                    doc = future.result()
+
+                if doc:
+                    # Verify content hash for integrity
+                    model_weights = doc.get('model_weights')
+                    stored_hash = doc.get('content_hash')
+
+                    if model_weights and stored_hash:
+                        computed_hash = hashlib.sha256(json.dumps(model_weights, sort_keys=True).encode()).hexdigest()
+                        if computed_hash == stored_hash:
+                            return model_weights
+                        logger.error(f"Content hash mismatch for {doc_id}")
+                        return None
+                    logger.error(f"Missing weights or hash in document {doc_id}")
                     return None
-            else:
-                logger.error(f"Missing weights or hash in document {doc_id}")
-                return None
-                
-        except Exception as e:
-            logger.error(f"Error fetching model weights from CouchDB: {e}")
-            return None
+
+                # Document not present yet — likely the async write is still in flight
+                if attempt < max_attempts:
+                    logger.warning(f"Weights doc {doc_id} not in CouchDB yet "
+                                   f"(attempt {attempt}/{max_attempts}); retrying in {retry_delay}s")
+                    await asyncio.sleep(retry_delay)
+
+            except Exception as e:
+                logger.error(f"Error fetching model weights from CouchDB for {doc_id} "
+                             f"(attempt {attempt}/{max_attempts}): {e}")
+                if attempt < max_attempts:
+                    await asyncio.sleep(retry_delay)
+
+        logger.error(f"Document {doc_id} not found in CouchDB after {max_attempts} attempts")
+        return None
     
     def _get_couchdb_document(self, doc_id: str) -> Dict:
         """Get document from CouchDB (synchronous wrapper)"""

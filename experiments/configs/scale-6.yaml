@@ -8,7 +8,7 @@ cluster:
   compute_nodes: 4
 
 federated_learning:
-  workflow_id: "fl-experiment"
+  workflow_id: "357bc695-ac7c-4335-bfc4-763e53237d23"
   max_rounds: 5
   non_iid_alpha: 0.5
   total_nodes: 6

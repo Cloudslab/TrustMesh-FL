@@ -83,7 +83,7 @@ for run in $(seq 1 "$RUNS"); do
     mkdir -p "$RUN_DIR/logs"
 
     PIDS=()
-    WF_ID="${WORKFLOW_ID}-run${run}"
+    WF_ID="${WORKFLOW_ID}"
 
     # Launch FL simulation on each IoT node
     for i in $(seq 0 $(( IOT_NODES - 1 ))); do

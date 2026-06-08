@@ -222,7 +222,7 @@ class AggregationRequestTransactionHandler(TransactionHandler):
                 doc_id=doc_id,
                 document=doc
             ).get_result()
-            
+
             logger.info(f"Stored model weights in CouchDB: {doc_id}")
             return {
                 'success': True,
@@ -230,8 +230,19 @@ class AggregationRequestTransactionHandler(TransactionHandler):
                 'content_hash': content_hash,
                 'rev': result.get('rev')
             }
-            
+
         except Exception as e:
+            # apply() runs on every validator, so concurrent writers race for the same
+            # deterministic doc_id. A conflict means the doc already exists with identical
+            # content (same id + same weights) — that is success for our purposes.
+            if 'conflict' in str(e).lower() or '409' in str(e):
+                logger.info(f"Model weights already present in CouchDB (conflict, treated as stored): {doc_id}")
+                return {
+                    'success': True,
+                    'doc_id': doc_id,
+                    'content_hash': content_hash,
+                    'rev': None
+                }
             logger.error(f"Failed to store model weights in CouchDB: {e}")
             return None
 
@@ -385,8 +396,14 @@ class AggregationRequestTransactionHandler(TransactionHandler):
             # Create document ID and content hash for model weights (store metadata only in blockchain)
             initial_weights_doc_id = f"{aggregation_id}_{initial_node_id}_weights"
             content_hash = hashlib.sha256(json.dumps(initial_weights, sort_keys=True).encode()).hexdigest()
-            
+
             logger.info(f"Prepared model weights metadata for {initial_node_id}: {initial_weights_doc_id}")
+
+            # Persist the actual weight tensors to CouchDB; blockchain holds metadata only.
+            # The aggregator fetches these docs by id when performing FedAvg.
+            self._store_model_weights_in_couchdb(
+                initial_weights_doc_id, initial_weights, initial_node_id, aggregation_id
+            )
             
             round_data = {
                 'aggregation_id': aggregation_id,
@@ -453,8 +470,14 @@ class AggregationRequestTransactionHandler(TransactionHandler):
             # Create document ID and content hash for model weights (store metadata only in blockchain)
             weights_doc_id = f"{aggregation_id}_{node_id}_weights"
             content_hash = hashlib.sha256(json.dumps(model_weights, sort_keys=True).encode()).hexdigest()
-            
+
             logger.info(f"Prepared model weights metadata for {node_id}: {weights_doc_id}")
+
+            # Persist the actual weight tensors to CouchDB; blockchain holds metadata only.
+            # The aggregator fetches these docs by id when performing FedAvg.
+            self._store_model_weights_in_couchdb(
+                weights_doc_id, model_weights, node_id, aggregation_id
+            )
             
             # Add node contribution metadata (no weights in blockchain)
             round_data['participating_nodes'].append(node_id)

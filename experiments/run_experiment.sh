@@ -54,21 +54,19 @@ echo "Discovered IoT pods: ${IOT_PODS[*]}"
 COMPUTE_PODS=($(kubectl get pods -o name | grep -E "^pod/pbft-[0-9]" | sed 's|pod/||' | sort))
 echo "Discovered compute pods: ${COMPUTE_PODS[*]}"
 
-# Set environment variables on all IoT pods
-echo "Setting environment variables on IoT pods..."
-for pod in "${IOT_PODS[@]}"; do
-    kubectl set env pod/"$pod" \
-        TOTAL_NODES="$TOTAL_NODES_VAL" \
-        NON_IID_ALPHA="$NON_IID_ALPHA" \
-        AGGREGATION_TIMEOUT="$AGG_TIMEOUT" \
-        MIN_NODES_FOR_AGGREGATION="$MIN_NODES"
-done
-
-# Set skip_validation on compute nodes if needed
+# SKIP_VALIDATION requires updating the deployment (env on a running pod is immutable). (env on a running pod is immutable).
+# This triggers a rolling restart of pbft pods before the experiment runs.
 if [ "$SKIP_VALIDATION" = "true" ]; then
-    echo "Setting SKIP_VALIDATION=true on compute node pods..."
+    echo "Setting SKIP_VALIDATION=true on pbft deployments (triggers rolling restart)..."
     for pod in "${COMPUTE_PODS[@]}"; do
-        kubectl set env pod/"$pod" -c aggregation-confirmation-tp SKIP_VALIDATION=true
+        # Pod name is pbft-N-<hash>; deployment name is pbft-N
+        deployment=$(echo "$pod" | grep -oE "^pbft-[0-9]+")
+        kubectl set env deployment/"$deployment" -c aggregation-confirmation-tp SKIP_VALIDATION=true
+    done
+    echo "Waiting for pbft pods to restart..."
+    for pod in "${COMPUTE_PODS[@]}"; do
+        deployment=$(echo "$pod" | grep -oE "^pbft-[0-9]+")
+        kubectl rollout status deployment/"$deployment" --timeout=120s
     done
 fi
 
@@ -90,16 +88,18 @@ for run in $(seq 1 "$RUNS"); do
         pod="${IOT_PODS[$i]}"
         LOG_FILE="$RUN_DIR/logs/${pod}_simulation.log"
 
+        ENV_VARS="TOTAL_NODES=$TOTAL_NODES_VAL NON_IID_ALPHA=$NON_IID_ALPHA AGGREGATION_TIMEOUT=$AGG_TIMEOUT MIN_NODES_FOR_AGGREGATION=$MIN_NODES"
+
         # Determine if this node is byzantine (highest indices)
         if [ "$BYZANTINE_ENABLED" = "true" ] && [ "$i" -ge "$NORMAL_COUNT" ]; then
             echo "  Launching BYZANTINE node $pod (mode=$ATTACK_MODE)..."
             kubectl exec "$pod" -- bash -c \
-                "python mnist-federated-learning-simulation.py --workflow-id $WF_ID --max-rounds $MAX_ROUNDS --byzantine-mode $ATTACK_MODE" \
+                "$ENV_VARS python mnist-federated-learning-simulation.py --workflow-id $WF_ID --max-rounds $MAX_ROUNDS --byzantine-mode $ATTACK_MODE" \
                 > "$LOG_FILE" 2>&1 &
         else
             echo "  Launching normal node $pod..."
             kubectl exec "$pod" -- bash -c \
-                "python mnist-federated-learning-simulation.py --workflow-id $WF_ID --max-rounds $MAX_ROUNDS" \
+                "$ENV_VARS python mnist-federated-learning-simulation.py --workflow-id $WF_ID --max-rounds $MAX_ROUNDS" \
                 > "$LOG_FILE" 2>&1 &
         fi
         PIDS+=($!)

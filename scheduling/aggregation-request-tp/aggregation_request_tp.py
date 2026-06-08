@@ -48,6 +48,9 @@ CONFIRMATION_NAMESPACE = hashlib.sha512('aggregation-confirmation'.encode()).hex
 # Federated learning configuration
 AGGREGATION_TIMEOUT = int(os.getenv('AGGREGATION_TIMEOUT', '180'))  # 3 minutes default
 MIN_NODES_FOR_AGGREGATION = int(os.getenv('MIN_NODES_FOR_AGGREGATION', '1'))  # Minimum 1 node for aggregation
+# Number of compute nodes, used for deterministic round-robin aggregator election.
+# Must match the deployed compute-node count (set via deploy env); default 4.
+COMPUTE_NODE_COUNT = int(os.getenv('COMPUTE_NODE_COUNT', '4'))
 
 logger = logging.getLogger(__name__)
 
@@ -312,7 +315,11 @@ class AggregationRequestTransactionHandler(TransactionHandler):
         node_id = payload['node_id']
         model_weights = payload['model_weights']
         iot_round_number = payload.get('round_number', 1)  # IoT node's local round - ignore for aggregation logic
-        
+        # Deterministic timestamp from the transaction payload (identical bytes on every
+        # validator). NEVER use time.time() in apply() — it diverges per-validator and
+        # breaks PBFT state-root consensus, so the block never commits.
+        request_ts = int(payload.get('timestamp', 0))
+
         logger.info(f"Aggregation request - Workflow: {workflow_id}, Node: {node_id}, IoT Round: {iot_round_number} (ignored)")
 
         # Validate workflow exists (any valid TrustMesh workflow can support aggregation)
@@ -321,30 +328,33 @@ class AggregationRequestTransactionHandler(TransactionHandler):
             raise InvalidTransaction(f"Invalid workflow ID: {workflow_id}")
 
         # Check for existing aggregation round (use workflow_id only, ignore IoT round numbers)
-        existing_round = self._get_existing_aggregation_round(context, workflow_id)
-        
+        existing_round = self._get_existing_aggregation_round(context, workflow_id, request_ts)
+
         if existing_round:
             # Join existing aggregation round
             aggregation_id = existing_round['aggregation_id']
             aggregator_node = existing_round['aggregator_node']
             global_round = existing_round['global_round_number']
             logger.info(f"Joining existing aggregation round {aggregation_id} (global round {global_round}) with aggregator {aggregator_node}")
-            
+
             # Add this node's contribution to the round
             self._add_node_to_aggregation_round(context, aggregation_id, node_id, model_weights, payload)
-            
+
         else:
-            # Create new aggregation round - use consensus to elect aggregator
-            aggregator_node = self.loop.run_until_complete(self._select_aggregator())
+            # Create new aggregation round. Elect the aggregator DETERMINISTICALLY
+            # (round-robin by global round number) so every validator picks the same
+            # node — live load-based election diverges across validators and breaks
+            # consensus. Round number must be computed first since election depends on it.
             global_round_number = self._get_next_global_round_number(context, workflow_id)
+            aggregator_node = self._select_aggregator(global_round_number)
             # Use deterministic aggregation ID based on workflow and global round only
             aggregation_id = self._make_deterministic_aggregation_id(workflow_id, global_round_number)
-            
+
             logger.info(f"Creating new aggregation round {aggregation_id} (global round {global_round_number}) with aggregator {aggregator_node}")
-            
+
             # Create aggregation round record
-            self._create_aggregation_round(context, workflow_id, aggregation_id, aggregator_node, 
-                                         global_round_number, node_id, model_weights, payload)
+            self._create_aggregation_round(context, workflow_id, aggregation_id, aggregator_node,
+                                         global_round_number, node_id, model_weights, payload, request_ts)
 
         # Get the global round number from the aggregation record
         aggregation_round = existing_round if existing_round else self._get_aggregation_round(context, aggregation_id)
@@ -371,7 +381,7 @@ class AggregationRequestTransactionHandler(TransactionHandler):
                 ("aggregator_node", aggregator_node),
                 ("weights_doc_id", weights_doc_id),
                 ("weights_hash", weights_hash),
-                ("timestamp", str(int(time.time())))
+                ("timestamp", str(request_ts))
             ]
         )
         
@@ -392,8 +402,12 @@ class AggregationRequestTransactionHandler(TransactionHandler):
             logger.error(f"Error validating workflow existence: {e}")
             return False
 
-    def _get_existing_aggregation_round(self, context, workflow_id):
-        """Check if an aggregation round already exists for this workflow (ignore IoT round numbers)"""
+    def _get_existing_aggregation_round(self, context, workflow_id, now_ts):
+        """Check if an aggregation round already exists for this workflow (ignore IoT round numbers).
+
+        now_ts is the deterministic per-transaction timestamp from the payload — used for
+        the expiry check so the join-vs-create decision is identical on every validator.
+        """
         try:
             # Get the current active aggregation round ID for this workflow
             active_round_address = self._make_active_round_address(workflow_id)
@@ -425,7 +439,7 @@ class AggregationRequestTransactionHandler(TransactionHandler):
             if round_data.get('status') == 'collecting':
                 # Check if the round has expired
                 created_at = round_data.get('created_at', 0)
-                if created_at and (int(time.time()) - created_at) > (AGGREGATION_TIMEOUT * 2):
+                if created_at and now_ts and (now_ts - created_at) > (AGGREGATION_TIMEOUT * 2):
                     logger.info(f"Aggregation round {active_aggregation_id} has expired (created_at: {created_at}) - creating new round")
                     return None
                 logger.info(f"Found existing active aggregation round: {round_data['aggregation_id']} (global round {round_data.get('global_round_number', 'unknown')})")
@@ -438,9 +452,10 @@ class AggregationRequestTransactionHandler(TransactionHandler):
             logger.error(f"Error checking for existing aggregation round: {e}")
             return None
 
-    def _create_aggregation_round(self, context, workflow_id, aggregation_id, aggregator_node, 
-                                 global_round_number, initial_node_id, initial_weights, initial_payload):
-        """Create a new aggregation round"""
+    def _create_aggregation_round(self, context, workflow_id, aggregation_id, aggregator_node,
+                                 global_round_number, initial_node_id, initial_weights, initial_payload,
+                                 created_at_ts):
+        """Create a new aggregation round (created_at_ts is the deterministic payload timestamp)"""
         try:
             address = self._make_aggregation_address(aggregation_id)
             
@@ -466,7 +481,7 @@ class AggregationRequestTransactionHandler(TransactionHandler):
                         'source_public_key': initial_payload.get('source_public_key')
                     }
                 },
-                'created_at': int(time.time()),
+                'created_at': created_at_ts,
                 'min_nodes_required': MIN_NODES_FOR_AGGREGATION,
                 'expected_nodes': []  # Time-based aggregation - any number of nodes can participate
             }
@@ -601,60 +616,21 @@ class AggregationRequestTransactionHandler(TransactionHandler):
         active_key = f"{workflow_id}_active_round"
         return AGGREGATION_NAMESPACE + hashlib.sha512(active_key.encode()).hexdigest()[:64]
 
-    async def _select_aggregator(self):
-        """Select aggregator node using deterministic algorithm with consensus"""
-        logger.info("Entering _select_aggregator method")
-        try:
-            if self.redis is None:
-                logger.error("Redis connection not initialized")
-                raise InvalidTransaction("Redis connection not initialized")
+    def _select_aggregator(self, global_round_number):
+        """Deterministically elect the aggregator: round-robin by global round number.
 
-            # Get all resource keys first, then sort for deterministic order
-            resource_keys = []
-            async for key in self.redis.scan_iter(match='resources_*'):
-                resource_keys.append(key)
-            
-            # Sort keys to ensure deterministic order across validators
-            resource_keys.sort()
-            
-            node_resources = []
-            logger.info("Scanning Redis for resource data")
-            for key in resource_keys:
-                node_id = key.split('_', 1)[1]
-                logger.debug(f"Fetching data for node: {node_id}")
-                redis_data = await self.redis.get(key)
-                if redis_data:
-                    resource_data = json.loads(redis_data)
-                    logger.debug(f"Resource data for node {node_id}: {resource_data}")
-                    node_resources.append({
-                        'id': node_id,
-                        'resources': resource_data
-                    })
-
-            if not node_resources:
-                logger.error("No resource data available")
-                raise InvalidTransaction("No resource data available")
-
-            logger.info("Selecting node with most available resources as aggregator")
-            # Sort by node_id for deterministic tie-breaking when resources are equal
-            selected_node = max(node_resources, key=lambda x: (self._calculate_available_resources(x['resources']), x['id']))
-            logger.info(f"Selected aggregator node: {selected_node['id']}")
-            return selected_node['id']
-        except RedisError as e:
-            logger.error(f"Error accessing Redis: {str(e)}")
-            logger.error(traceback.format_exc())
-            raise InvalidTransaction("Failed to access node resource data")
-        except Exception as e:
-            logger.error(f"Unexpected error in _select_aggregator: {str(e)}")
-            logger.error(traceback.format_exc())
-            raise InvalidTransaction(f"Error selecting aggregator: {str(e)}")
-
-    @staticmethod
-    def _calculate_available_resources(resources):
-        """Calculate available resources for node selection"""
-        cpu_available = resources['cpu']['total'] * (1 - resources['cpu']['used_percent'] / 100)
-        memory_available = resources['memory']['total'] * (1 - resources['memory']['used_percent'] / 100)
-        return cpu_available + memory_available
+        apply() runs on every validator and MUST be deterministic. The previous
+        implementation read live Redis resource metrics, so each validator saw a
+        different snapshot and could elect a different node -> divergent state ->
+        PBFT state-root mismatch -> the aggregation block never commits -> no event ->
+        no aggregation. Round-robin over a fixed compute-node count is identical on
+        every validator and spreads aggregation evenly across rounds.
+        """
+        index = (int(global_round_number) - 1) % COMPUTE_NODE_COUNT
+        aggregator = f"sawtooth-compute-node-{index}"
+        logger.info(f"Elected aggregator {aggregator} for global round {global_round_number} "
+                    f"(round-robin over {COMPUTE_NODE_COUNT} compute nodes)")
+        return aggregator
 
     @staticmethod
     def _make_aggregation_address(aggregation_id):

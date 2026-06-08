@@ -53,8 +53,12 @@ MIN_NODES_FOR_AGGREGATION = int(os.getenv('MIN_NODES_FOR_AGGREGATION', '1'))  # 
 PEER_REGISTRY_NAMESPACE = hashlib.sha512('peer-registry'.encode()).hexdigest()[:6]
 PEER_REGISTRY_INDEX_ADDRESS = PEER_REGISTRY_NAMESPACE + hashlib.sha512('__node_index__'.encode()).hexdigest()[:64]
 # A compute node whose last peer-registry update is older than this (seconds) is treated
-# as gone and excluded from aggregator election. Uses the deterministic payload timestamp.
-NODE_STALENESS_THRESHOLD = int(os.getenv('NODE_STALENESS_THRESHOLD', '300'))
+# as gone and excluded from aggregator election. Must be comfortably larger than the
+# compute nodes' peer-registry write cadence or live nodes flicker as "stale".
+NODE_STALENESS_THRESHOLD = int(os.getenv('NODE_STALENESS_THRESHOLD', '900'))
+# Static fallback compute-node count, used only for deterministic round-robin when the
+# peer-registry membership index hasn't populated yet (writes are periodic).
+COMPUTE_NODE_COUNT = int(os.getenv('COMPUTE_NODE_COUNT', '4'))
 
 logger = logging.getLogger(__name__)
 
@@ -630,26 +634,32 @@ class AggregationRequestTransactionHandler(TransactionHandler):
         leave/crash stop writing, go stale, and are excluded. now_ts is the deterministic
         per-transaction payload timestamp used for the staleness check.
         """
+        pool = []
+        source = "peer-registry"
         entries = context.get_state([PEER_REGISTRY_INDEX_ADDRESS])
-        if not entries or not entries[0].data:
-            raise InvalidTransaction("Peer-registry node index empty; cannot elect aggregator yet")
+        if entries and entries[0].data:
+            index = json.loads(entries[0].data.decode())
+            # Compute nodes only (IoT nodes don't run the resource registrar)
+            candidates = {nid: int(ts) for nid, ts in index.items()
+                          if nid.startswith('sawtooth-compute-node')}
+            if candidates:
+                # Prefer nodes seen within the staleness window (excludes left/crashed
+                # nodes); fall back to all known if none look fresh, so a registry-wide
+                # update lag can't wedge aggregation.
+                fresh = sorted(nid for nid, ts in candidates.items()
+                               if now_ts and (now_ts - ts) <= NODE_STALENESS_THRESHOLD)
+                pool = fresh if fresh else sorted(candidates.keys())
 
-        index = json.loads(entries[0].data.decode())
-        # Compute nodes only (IoT nodes don't run the resource registrar)
-        candidates = {nid: int(ts) for nid, ts in index.items()
-                      if nid.startswith('sawtooth-compute-node')}
-        if not candidates:
-            raise InvalidTransaction("No compute nodes in peer-registry index")
-
-        # Prefer nodes seen within the staleness window; fall back to all known nodes if
-        # none look fresh (so a registry-wide update lag can't wedge aggregation entirely).
-        fresh = sorted(nid for nid, ts in candidates.items()
-                       if now_ts and (now_ts - ts) <= NODE_STALENESS_THRESHOLD)
-        pool = fresh if fresh else sorted(candidates.keys())
+        if not pool:
+            # Index not populated yet (peer-registry writes are periodic) -> deterministic
+            # static round-robin so aggregation is never blocked. The live set takes over
+            # automatically once the index is available.
+            pool = [f"sawtooth-compute-node-{n}" for n in range(COMPUTE_NODE_COUNT)]
+            source = "static-fallback"
 
         aggregator = pool[(int(global_round_number) - 1) % len(pool)]
         logger.info(f"Elected aggregator {aggregator} for global round {global_round_number} "
-                    f"(round-robin over {len(pool)} live node(s): {pool})")
+                    f"({source}; pool of {len(pool)}: {pool})")
         return aggregator
 
     @staticmethod

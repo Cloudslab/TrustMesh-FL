@@ -776,9 +776,12 @@ items:"
                 - name: COUCHDB_HOST
                   value: \"couchdb-$i.default.svc.cluster.local:6984\"
                 - name: RESOURCE_UPDATE_INTERVAL
-                  value: \"600\"
+                  value: \"120\"
+                # Write to peer-registry on every sample so the membership index (used for
+                # deterministic aggregator election) populates ~immediately and tracks
+                # joins/leaves. Was 500, which delayed the first on-chain write by ~hours.
                 - name: RESOURCE_UPDATE_BATCH_SIZE
-                  value: \"500\"
+                  value: \"1\"
                 - name: COUCHDB_USER
                   valueFrom:
                     secretKeyRef:

@@ -725,15 +725,17 @@ from model parameter counts and the two-phase message pattern.
 \toprule
 Model & Parameters & Payload (JSON) & Total \\
 \midrule
-MNISTNet   & 257\,162 & $\approx$5.4\,MB  & $\approx$59\,MB \\
-CIFAR10Net & 620\,810 & $\approx$13.0\,MB & $\approx$143\,MB \\
+MNISTNet   & 257\,162 & 5.5\,MB  & $\approx$61\,MB \\
+CIFAR10Net & 620\,810 & $\approx$13.3\,MB & $\approx$146\,MB \\
 \bottomrule
 \end{tabular}
 \vspace{2pt}
 
 {\footnotesize
 Per-round messages: $N$ upload submissions $+$ 1 confirmation broadcast $+$ $N$
-IoT deliveries $= 2N + 1$ model-weight messages. JSON serialisation is approximately
+IoT deliveries $= 2N + 1$ model-weight messages. The MNISTNet payload is the measured
+size of a stored weight document (5\,525\,730 bytes); the CIFAR10Net payload is scaled
+by parameter count. JSON serialisation is approximately
 $3\times$ larger than a binary equivalent; migration to a binary format is identified
 as future work (Section~\ref{sec:conclusion}).
 }

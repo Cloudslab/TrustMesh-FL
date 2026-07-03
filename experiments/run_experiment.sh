@@ -85,6 +85,14 @@ for run in $(seq 1 "$RUNS"); do
     PIDS=()
     WF_ID="${WORKFLOW_ID}"
 
+    # Clear stale FLTimer data on the IoT pods before launching. FLTimer appends to
+    # /tmp/fl-timing/*.jsonl, so leftovers from a previous run in the same pod would
+    # pollute this run's collected timing/accuracy data.
+    for i in $(seq 0 $(( IOT_NODES - 1 ))); do
+        pod="${IOT_PODS[$i]}"
+        [ -n "$pod" ] && kubectl exec "$pod" -- rm -rf /tmp/fl-timing 2>/dev/null || true
+    done
+
     # Launch FL simulation on each IoT node
     for i in $(seq 0 $(( IOT_NODES - 1 ))); do
         pod="${IOT_PODS[$i]}"

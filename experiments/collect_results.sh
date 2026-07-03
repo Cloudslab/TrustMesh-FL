@@ -11,18 +11,21 @@ OUTPUT_DIR="$SCRIPT_DIR/results/$EXPERIMENT_NAME/run_$RUN_NUMBER"
 
 mkdir -p "$OUTPUT_DIR/timing" "$OUTPUT_DIR/logs" "$OUTPUT_DIR/resources"
 
-# Discover pods
-IOT_PODS=($(kubectl get pods -l app=iot -o name | sed 's|pod/||'))
-COMPUTE_PODS=($(kubectl get pods -l app=compute-node -o name | sed 's|pod/||'))
+# Discover pods (deployed with label name=iot-N / pbft-N, not app=...)
+IOT_PODS=($(kubectl get pods -o name | grep -E "^pod/iot-[0-9]" | sed 's|pod/||' | sort))
+COMPUTE_PODS=($(kubectl get pods -o name | grep -E "^pod/pbft-[0-9]" | sed 's|pod/||' | sort))
 
 echo "Collecting results for $EXPERIMENT_NAME run $RUN_NUMBER..."
 
-# Copy FL timing logs from IoT pods
+# Copy FL timing JSONLs from IoT pods. The analysis scripts glob
+# run_N/iot-simulation_*.jsonl at the run-dir top level, so flatten there
+# (filenames are unique per node: iot-simulation_iot-N.jsonl).
 for pod in "${IOT_PODS[@]}"; do
     echo "  Copying timing logs from $pod..."
     kubectl cp "$pod":/tmp/fl-timing/ "$OUTPUT_DIR/timing/${pod}/" 2>/dev/null || \
         echo "    WARNING: No timing data found on $pod"
 done
+find "$OUTPUT_DIR/timing" -name '*.jsonl' -exec cp {} "$OUTPUT_DIR/" \; 2>/dev/null || true
 
 # Capture IoT pod logs (main container)
 for pod in "${IOT_PODS[@]}"; do

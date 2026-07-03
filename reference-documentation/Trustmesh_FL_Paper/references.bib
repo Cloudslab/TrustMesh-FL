@@ -1,8 +1,6 @@
 % ============================================================================
 % references.bib — TrustMesh-FL (TPDS submission)
-% ============================================================================
-% NOTE: Entries marked [VERIFY] should be confirmed against IEEE Xplore / ACM DL
-% before final submission. DOIs are included where known with high confidence.
+% All entries verified against IEEE Xplore / ACM DL / PMLR / arXiv, July 2026.
 % ============================================================================
 
 % ----------------------------------------------------------------------------
@@ -78,7 +76,7 @@
 
 @InProceedings{yin2018byzantine,
   title = 	 {{B}yzantine-Robust Distributed Learning: Towards Optimal Statistical Rates},
-  author =       {Yin, Dong and Chen, Yudong and Kannan, Ramchandran and Bartlett, Peter},
+  author =       {Yin, Dong and Chen, Yudong and Ramchandran, Kannan and Bartlett, Peter},
   booktitle = 	 {Proceedings of the 35th International Conference on Machine Learning},
   pages = 	 {5650--5659},
   year = 	 {2018},
@@ -147,6 +145,42 @@ month = aug
   keywords={Deep learning;Training;Servers;Blockchain;Collaboration;Training data;Data models;Deep learning;privacy-preserving training;blockchain;incentive},
   doi={10.1109/TDSC.2019.2952332}}
 
+@ARTICLE{li2021bflc,
+  author  = {Li, Yuzheng and Chen, Chuan and Liu, Nan and Huang, Huawei and
+             Zheng, Zibin and Yan, Qiang},
+  journal = {IEEE Network},
+  title   = {A Blockchain-Based Decentralized Federated Learning Framework
+             with Committee Consensus},
+  year    = {2021},
+  volume  = {35},
+  number  = {1},
+  pages   = {234--241},
+  doi     = {10.1109/MNET.011.2000263}
+}
+
+@ARTICLE{peng2022vfchain,
+  author  = {Peng, Zhe and Xu, Jianliang and Chu, Xiaowen and Gao, Shang and
+             Yao, Yuan and Gu, Rong and Tang, Yuzhe},
+  journal = {IEEE Transactions on Network Science and Engineering},
+  title   = {{VFChain}: Enabling Verifiable and Auditable Federated Learning
+             via Blockchain Systems},
+  year    = {2022},
+  volume  = {9},
+  number  = {1},
+  pages   = {173--186},
+  doi     = {10.1109/TNSE.2021.3050781}
+}
+
+@inproceedings{ramanan2020baffle,
+  author    = {Ramanan, Paritosh and Nakayama, Kiyoshi},
+  title     = {{BAFFLE}: Blockchain Based Aggregator Free Federated Learning},
+  booktitle = {Proceedings of the 2020 IEEE International Conference on
+               Blockchain (Blockchain)},
+  year      = {2020},
+  pages     = {72--81},
+  doi       = {10.1109/Blockchain50366.2020.00017}
+}
+
 @ARTICLE{shayan2021biscotti,
   author={Shayan, Muhammad and Fung, Clement and Yoon, Chris J. M. and Beschastnikh, Ivan},
   journal={IEEE Transactions on Parallel and Distributed Systems}, 
@@ -171,6 +205,7 @@ year = {2019},
 issn = {0164-1212},
 author = {Shreshth Tuli and Redowan Mahmud and Shikhar Tuli and Rajkumar Buyya},
 keywords = {Fog computing, Edge computing, Cloud computing, Internet of Things(IoT), Blockchain},
+doi = {10.1016/j.jss.2019.04.050},
 }
 
 @inproceedings{yuan2021coopedge,
@@ -185,7 +220,8 @@ pages = {2245–2257},
 numpages = {13},
 keywords = {peer offloading, distributed consensus, cooperative edge computing, blockchain, Edge computing},
 location = {Ljubljana, Slovenia},
-series = {WWW '21}
+series = {WWW '21},
+doi = {10.1145/3442381.3449994}
 }
 
 @ARTICLE{kumar2020blockedge,
@@ -205,13 +241,13 @@ series = {WWW '21}
 % ----------------------------------------------------------------------------
 
 @inproceedings{castro1999practical,
-  title={Practical byzantine fault tolerance},
-  author={Castro, Miguel and Liskov, Barbara},
-  booktitle={OsDI},
-  volume={99},
-  number={1999},
-  pages={173--186},
-  year={1999}
+  title     = {Practical {Byzantine} Fault Tolerance},
+  author    = {Castro, Miguel and Liskov, Barbara},
+  booktitle = {Proceedings of the 3rd Symposium on Operating Systems Design
+               and Implementation (OSDI)},
+  pages     = {173--186},
+  year      = {1999},
+  publisher = {USENIX Association}
 }
 
 % ----------------------------------------------------------------------------
@@ -236,9 +272,9 @@ series = {WWW '21}
 % ----------------------------------------------------------------------------
 
 @misc{hyperledger2018sawtooth,
-  author       = {{Splinter Community}},
-  title        = {Sawtooth},
+  author       = {{Hyperledger Foundation}},
+  title        = {Hyperledger Sawtooth Documentation, Release 1.2},
   year         = {2019},
   howpublished = {\url{https://sawtooth.splinter.dev/docs}},
-  note         = {Accessed: 2026}
+  note         = {Accessed July 2026}
 }

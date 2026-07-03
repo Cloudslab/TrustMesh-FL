@@ -85,13 +85,14 @@ updates, and before any of them receive the result. Robust aggregation rules add
 former problem; they do not address the latter.
 
 Blockchain technology has been proposed as a mechanism for establishing trust in FL
-pipelines. BlockFL~\cite{kim2020blockchained} logs local model updates on-chain;
-FedChain~\cite{li2021fedchain}, BFLC~\cite{bflc2020}, and
-DeepChain~\cite{weng2021deepchain} record gradient metadata and participation proofs to
-support incentive mechanisms and post-hoc auditing. These approaches improve accountability,
-but they are fundamentally reactive: the blockchain provides an immutable record of what
-was \emph{submitted}, not a verification of what was \emph{computed}. Aggregation remains
-the responsibility of a single designated entity, and the trust problem is displaced rather
+pipelines. BlockFL~\cite{kim2020blockchained} logs local model updates on-chain, and
+DeepChain~\cite{weng2021deepchain} records gradient commitments to support incentive
+mechanisms and post-hoc auditing; committee-based designs such as BFLC~\cite{li2021bflc}
+and VFChain~\cite{peng2022vfchain} delegate aggregation to a small elected group of
+nodes. These approaches improve accountability, but the blockchain primarily provides an
+immutable record of what was \emph{submitted}, not a verification of what was
+\emph{computed}. Aggregation remains the responsibility of a designated entity or a
+small committee whose honesty must be assumed, and the trust problem is displaced rather
 than resolved.
 
 This paper proposes a different architectural approach. In \tmfl{}, model aggregation is
@@ -174,86 +175,116 @@ Section~\ref{sec:conclusion} concludes and outlines future work.
 
 \subsection{Federated Learning}
 
-McMahan et al.~\cite{mcmahan2017communication} introduced FedAvg, establishing the
-canonical federated learning protocol in which clients perform multiple local gradient
-descent steps before transmitting model updates to a central aggregator. Subsequent work
-identified data heterogeneity as a primary challenge: when client data distributions diverge
-significantly, local updates may conflict and slow global convergence~\cite{zhao2018federated}.
-FedProx~\cite{li2020federated} addressed this by introducing a proximal regularisation term
-that constrains local updates to remain close to the current global model, improving
-convergence stability under non-IID conditions. Communication efficiency has also received
-significant attention, with structured and compressed update schemes reducing the bandwidth
-cost of client-to-server transmission~\cite{konecny2016federated}.
+McMahan et al.~\cite{mcmahan2017communication} introduced federated averaging (FedAvg),
+the canonical federated learning protocol in which clients perform several epochs of
+local training and a server aggregates the resulting weight vectors in proportion to
+local sample counts. Data heterogeneity was identified early as a central obstacle:
+Zhao et al.~\cite{zhao2018federated} showed that accuracy degrades substantially when
+client distributions diverge, and FedProx~\cite{li2020federated} generalises FedAvg with
+a proximal term that stabilises local updates under such heterogeneity. A complementary
+line of work reduces the communication cost of update transmission through structured
+and sketched updates~\cite{konecny2016federated}.
 
-A shared assumption across these works is that the aggregation server is trusted: it
-receives client updates, applies the specified aggregation rule faithfully, and returns a
-correct global model. In open IoT environments where compute infrastructure is heterogeneous
-and untrusted, this assumption requires explicit enforcement by the protocol.
+These protocols share an architectural constant: a central aggregation service assumed
+to execute the aggregation rule faithfully. The server receives every update, computes
+the global model, and distributes the result; nothing in the protocol allows clients to
+establish that the returned model was actually computed from the submitted updates. In
+IoT deployments where the aggregation infrastructure is operated by third parties --- or,
+as in our setting, by an open set of heterogeneous compute nodes --- this assumption
+becomes the weakest link in the pipeline.
 
-\subsection{Byzantine-Resilient Federated Learning}
+\subsection{Byzantine-Robust Aggregation}
 
-Byzantine-resilient aggregation rules defend against clients that submit corrupted or
-adversarially crafted updates. Krum~\cite{blanchard2017machine} selects the client update
-with the smallest sum of squared distances to its neighbours, isolating outliers.
-Trimmed Mean~\cite{yin2018byzantine} applies coordinate-wise trimmed averaging, discarding
-the most extreme values in each parameter dimension. Bulyan~\cite{elMhamdi2018hidden}
-combines multi-Krum selection with trimmed mean aggregation to improve robustness against
-adaptive attacks. FLTrust~\cite{cao2020fltrust} uses a small server-side clean dataset to
-score client updates, accepting only those whose gradient direction aligns with the server's
-own gradient.
+A second line of work hardens the aggregation \emph{rule} against malicious clients.
+Krum~\cite{blanchard2017machine} selects the update with the smallest sum of squared
+distances to its nearest neighbours, isolating outliers. Coordinate-wise trimmed mean
+and median estimators~\cite{yin2018byzantine} achieve order-optimal statistical rates
+while discarding extreme values in each dimension. Bulyan~\cite{elMhamdi2018hidden}
+composes Krum-style selection with trimmed aggregation to resist attacks that hide
+large perturbations in a single coordinate. FLTrust~\cite{cao2020fltrust} bootstraps
+trust from a small server-side root dataset, weighting client updates by their
+directional similarity to a server-computed reference update. Fang et
+al.~\cite{fang2020local} showed that adaptive local model poisoning can nonetheless
+degrade models protected by several of these defences, underlining that robust rules
+are not a complete answer even for client-side threats.
 
-These methods address Byzantine behaviour at the client level. They presuppose that the
-entity applying the aggregation rule is itself honest. If the aggregator is compromised, it
-may selectively apply or ignore any of these rules, apply them to a manipulated subset of
-updates, or return an output that was not computed from the submitted gradients at all.
-\tmfl{} is orthogonal to Byzantine-resilient aggregation rules: the validation pipeline
-currently uses standard FedAvg, but the consensus-validated architecture is rule-agnostic
-and could accommodate Krum or Trimmed Mean as a drop-in replacement for the aggregation
-step while preserving the correctness guarantee.
+All of these mechanisms are executed by the very entity whose honesty is in question:
+a compromised aggregator may apply the rule selectively, apply it to a manipulated
+subset of updates, or return an output unrelated to the submitted gradients.
+Byzantine-robust rules are therefore orthogonal to this work. \tmfl{} currently
+validates standard sample-weighted FedAvg, but the consensus-validated architecture is
+rule-agnostic: a robust estimator could replace FedAvg inside the transaction processor
+while preserving the same correctness guarantee.
 
-\subsection{Blockchain-Integrated Federated Learning}
+\subsection{Blockchain-Based Federated Learning}
 
-BlockFL~\cite{kim2020blockchained} records local model updates on-chain, enabling
-contribution provenance tracking and supporting a cryptocurrency-based incentive mechanism.
-However, the aggregation itself is performed off-chain by a central coordinator; the
-blockchain records what was submitted, not the correctness of the aggregated result.
+Blockchain has been applied to federated learning with several distinct aims ---
+provenance, incentives, privacy, and decentralised coordination.
 
-FedChain~\cite{li2021fedchain} and BFLC~\cite{bflc2020} use blockchain primarily for
-incentive distribution and participation accounting. Both frameworks maintain a designated
-aggregation server that processes updates off-chain, with the blockchain serving as an
-auditable ledger of contributions and rewards.
+BlockFL~\cite{kim2020blockchained} replaces the central server with miners that
+exchange, cross-verify, and record local updates in blocks; each device then computes
+the global model locally from the recorded updates. Consensus attests to \emph{which
+updates were recorded}, not to any aggregation result: a device or miner that
+mis-computes the global model is not detected by the protocol, whose analysis focuses
+on latency-optimal block generation and reward allocation.
 
-DeepChain~\cite{weng2021deepchain} stores gradient commitments on-chain and introduces a
-chained gradient protocol to detect gradient manipulation across rounds. The aggregated
-model is nonetheless produced by a single entity, and the trust problem for the aggregator
-remains unaddressed.
+BFLC~\cite{li2021bflc} elects a committee that scores incoming updates and produces
+each round's global model, reducing consensus cost relative to network-wide validation;
+correctness consequently rests on an honest-majority assumption over the elected
+committee rather than on the full validator set. VFChain~\cite{peng2022vfchain}
+similarly delegates aggregation to a committee, but additionally records verifiable
+proofs of the committee's work on-chain, with an authenticated data structure for
+efficient proof retrieval and secure committee rotation.
 
-Biscotti~\cite{shayan2021biscotti} decentralises aggregation through a peer-to-peer
-protocol in which all participants evaluate each other's updates. While this eliminates the
-single aggregator, it requires each client to receive and process every other client's
-update, introducing communication costs that scale as $O(N^2)$ in the number of clients
-and are prohibitive for IoT deployments with constrained network bandwidth.
+DeepChain~\cite{weng2021deepchain} targets gradient privacy and auditability: gradients
+are encrypted under a threshold additively homomorphic scheme, and collateral deposits
+with audit mechanisms deter deviation. Misbehaviour is deterred economically and
+detected after the fact, rather than prevented by independent re-execution of the
+aggregation computation.
 
-The key distinction between all prior systems and \tmfl{} is the following: prior systems
-treat the aggregation computation as a pre-consensus step that the blockchain records;
-\tmfl{} treats the aggregation computation as a within-consensus operation that the
-blockchain verifies. This is the first system, to the authors' knowledge, in which the
-correctness of FedAvg is a property enforced by distributed consensus rather than assumed
-from a trusted party.
+Biscotti~\cite{shayan2021biscotti} is a fully peer-to-peer design in which
+stake-weighted committees selected by verifiable random functions add differentially
+private noise, filter updates with Multi-Krum, and assemble the global model through
+secure aggregation over secret shares. Its guarantees require that a supermajority
+(70\%) of stake is honest, and its evaluation on 20 cloud VMs with up to 200 peers
+reported an order-of-magnitude slowdown relative to centralised federated learning.
 
-\subsection{Distributed Computing Frameworks for Trustless IoT}
+BAFFLE~\cite{ramanan2020baffle} removes the aggregator entirely by holding the global
+model in an Ethereum smart contract, partitioned into chunks that clients update through
+a score-and-bid mechanism. Although contract execution is replicated across the
+(private) chain's nodes, update scoring is computed off-chain by the clients themselves,
+no model-quality validation is applied to what the contract stores, and gas limits bound
+the size of on-chain model state.
 
-The integration of blockchain with fog and edge computing has been explored in several
-frameworks. FogBus~\cite{tuli2019fogbus} introduced blockchain-based data logging for
-fog computing but relied on a partially centralised control structure that limits
-applicability in fully distributed environments. CoopEdge~\cite{yuan2021coopedge}
-introduced a reputation-based consensus mechanism for cooperative edge computation.
-BlockEdge~\cite{kumar2020blockedge} combined permissioned and permissionless blockchain
-chains in a three-tier architecture but remained limited to simulation evaluation. A
-systematic comparison of these frameworks against \tm{} is presented in
-\cite{rangwala2025trustmesh}. None of the surveyed frameworks support federated learning
-with verifiable aggregation. \tmfl{} addresses this gap by extending \tm{}'s trust
-guarantees to the FL aggregation computation.
+In summary, existing systems either record FL artefacts on-chain while computing the
+aggregate off-chain (BlockFL, DeepChain), delegate aggregation to a small committee
+whose honesty must be assumed (BFLC, VFChain, Biscotti), or replicate contract
+execution without validating the quality of the stored model (BAFFLE). \tmfl{} takes a
+different position in this design space: the full sample-weighted FedAvg computation
+\emph{and} a model-quality validation pipeline execute deterministically inside the
+state-transition function of a BFT-replicated blockchain, so every PBFT validator
+independently re-computes the aggregate from content-addressed weights and a round
+commits only if the validators agree. Correctness of aggregation is thereby inherited
+from the consensus fault model itself --- at most $f$ faulty validators out of
+$3f{+}1$ --- rather than from a designated party, an elected committee, or economic
+deterrence. To the authors' knowledge, \tmfl{} is the first system in which FedAvg
+correctness is enforced as a consensus property and evaluated on a physical
+heterogeneous IoT testbed. Table~\ref{tab:related} in
+Section~\ref{sec:discussion} locates \tmfl{} within this design space.
+
+\subsection{Blockchain-Enabled Distributed Computing for IoT}
+
+Blockchain-integrated fog and edge computing frameworks provide the infrastructure
+context for this work. FogBus~\cite{tuli2019fogbus} introduced blockchain-based data
+integrity logging for fog computing, but retains a partially centralised control
+structure. CoopEdge~\cite{yuan2021coopedge} builds a decentralised platform for
+cooperative edge computing in which edge servers earn reputation recorded through
+consensus. BlockEdge~\cite{kumar2020blockedge} couples permissioned and permissionless
+chains in a three-tier industrial IoT architecture, evaluated in simulation. A
+systematic comparison of these frameworks against \tm{} appears
+in~\cite{rangwala2025trustmesh}. None of them supports federated learning, let alone
+verifiable aggregation; \tmfl{} closes this gap by extending \tm{}'s consensus-backed
+trust guarantees from task scheduling to the FL aggregation computation itself.
 
 % ============================================================================
 \section{The \tm{} Framework}
@@ -952,32 +983,27 @@ FL systems across dimensions directly relevant to the trust properties of aggreg
 \centering
 \caption{Comparison of Blockchain-Integrated Federated Learning Systems}
 \label{tab:related}
-\begin{tabular}{lccccc}
+\footnotesize
+\begin{tabular}{lllll}
 \toprule
-System
-    & \makecell{Aggregation\\Verified by Consensus}
-    & \makecell{Byzantine\\Client Defence}
-    & \makecell{Aggregator Trust\\Required}
-    & \makecell{Incentive\\Mechanism}
-    & \makecell{Practical\\Implementation} \\
+System & Aggregation computed by & Correctness mechanism & Update screening & Trust assumption \\
 \midrule
-BlockFL~\cite{kim2020blockchained}   & $\times$ & $\times$ & \checkmark & \checkmark & \checkmark \\
-FedChain~\cite{li2021fedchain}       & $\times$ & $\times$ & \checkmark & \checkmark & $\times$   \\
-BFLC~\cite{bflc2020}                 & $\times$ & $\times$ & \checkmark & \checkmark & $\times$   \\
-DeepChain~\cite{weng2021deepchain}   & $\times$ & \checkmark & \checkmark & $\times$ & $\times$   \\
-Biscotti~\cite{shayan2021biscotti}   & $\times$ & \checkmark & $\times$ & \checkmark  & $\times$   \\
-\tmfl{} (this work)                  & \checkmark & \checkmark & $\times$ & $\times$  & \checkmark \\
+BlockFL~\cite{kim2020blockchained}   & Each device, off-chain & None (updates recorded on-chain) & Miner cross-verification & Honest miner majority \\
+BFLC~\cite{li2021bflc}               & Elected committee & Committee scoring & Committee validation scores & Honest committee majority \\
+DeepChain~\cite{weng2021deepchain}   & Parties over encrypted gradients & Audit + collateral incentives & None (privacy focus) & Rational participants \\
+Biscotti~\cite{shayan2021biscotti}   & VRF-selected committee & Secure aggregation, commitments & Multi-Krum & $\geq$70\% honest stake \\
+VFChain~\cite{peng2022vfchain}       & Selected committee & Verifiable proofs on-chain & Committee verification & Honest committee majority \\
+BAFFLE~\cite{ramanan2020baffle}      & Smart contract (chunked) & Replicated contract execution & Client-side score-and-bid & Honest chain quorum \\
+\tmfl{} (this work)                  & All PBFT validators & Deterministic re-execution + model validation & Four-stage validation pipeline & $\leq f$ of $3f{+}1$ validators faulty \\
 \bottomrule
 \end{tabular}
 \vspace{2pt}
 
 {\footnotesize
-$\times$: not supported. \checkmark: supported.
-\textit{Aggregation Verified by Consensus}: the correctness of the aggregation
-computation is independently verified by multiple parties through a consensus protocol.
-\textit{Aggregator Trust Required}: the system assumes an honest aggregation server.
-\textit{Practical Implementation}: the system has been evaluated on real (non-simulated)
-hardware.
+\textit{Aggregation computed by}: the entity that produces the global model.
+\textit{Correctness mechanism}: how the system establishes that the produced model is
+the correct output of the aggregation rule.
+\textit{Update screening}: defences applied to individual client updates.
 }
 \end{table*}
 

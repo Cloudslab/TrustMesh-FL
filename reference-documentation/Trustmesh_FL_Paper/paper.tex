@@ -390,9 +390,13 @@ assigns the training task to a compute node based on available resources, using 
 algorithm described in~\cite{rangwala2025trustmesh}. The compute node executes the
 \texttt{federated-training-task} container, which performs local stochastic gradient descent
 for a fixed number of epochs and returns the updated model weights to the IoT node via an
-authenticated ZMQ channel. In round~1, weights are initialised randomly; in subsequent
-rounds, the IoT node supplies the most recently received global model weights as
-initialisation, implementing warm-start local training.
+authenticated ZMQ channel. In round~1, all nodes initialise their model from a common
+random seed, emulating a server-broadcast initial model without central coordination;
+FedAvg requires a shared initialisation, as averaging independently-initialised networks
+produces a chance-level model~\cite{mcmahan2017communication}, which the validation
+pipeline of Section~\ref{sec:validation} would (correctly) reject. In subsequent rounds,
+the IoT node supplies the most recently received global model weights as initialisation,
+implementing warm-start local training.
 
 \subsection{Phase 2: Consensus-Validated Aggregation}
 
@@ -405,10 +409,18 @@ aggregation round lifecycle, described in detail in the following subsections.
 The first aggregation request for a given workflow creates a new round. A globally unique,
 deterministic round identifier is derived from the workflow identifier and a monotonically
 increasing global round counter stored in blockchain state. This determinism is essential:
-all validators must independently construct the same identifier without coordination outside
-of consensus. An aggregator compute node is selected by all validators independently from
-the same resource snapshot in Redis, with node identifiers serving as a tiebreaker to
-guarantee identical selection. The round is assigned status \textsc{collecting}.
+all validators must independently construct the same identifier, and elect the same
+aggregator, without coordination outside of consensus. Because transaction execution under
+PBFT must be bit-identical across validators, the aggregator cannot be elected from live
+resource metrics: distinct validators would observe distinct snapshots and commit divergent
+state, causing the state-root hashes to disagree and the block to never commit. The
+aggregator is instead elected by deterministic round-robin over the set of live compute
+nodes recorded in blockchain state by the \tm{} peer registry, indexed by the global round
+number. Nodes whose most recent resource-update transaction is older than a configurable
+staleness threshold are excluded, so that nodes that have left or crashed rotate out of
+the election pool; a static round-robin over the configured node set serves as a fallback
+while the membership index is initially populating. The round is assigned status
+\textsc{collecting}.
 
 \subsubsection{Contribution Collection}
 
@@ -539,11 +551,19 @@ in Python~3.8 using the Hyperledger Sawtooth Python SDK.
 The \texttt{aggregation-request-tp} handles IoT node weight submissions. It manages the
 aggregation round lifecycle in blockchain state under a dedicated namespace, records
 per-node contribution metadata (CouchDB document identifiers, SHA-256 content hashes,
-sample counts, and IoT node ZMQ connection details), and selects the aggregator node
-deterministically using resource snapshots from Redis. Model weights are not stored in
-blockchain state by this processor; instead, it emits an \texttt{aggregation-request}
-event carrying the weight payload, which the designated aggregator's event handler
-receives and persists to CouchDB.
+sample counts, and IoT node ZMQ connection details), and elects the aggregator node by
+deterministic round-robin over the peer-registry membership index read from blockchain
+state. Two implementation constraints proved essential for liveness under PBFT. First,
+the \texttt{apply()} handler must be strictly deterministic: all timestamps written to
+state are taken from the transaction payload rather than validator-local clocks, and no
+live external stores are consulted. Second, \texttt{apply()} must be free of blocking
+I/O, as it executes in the consensus hot path on every validator; a synchronous CouchDB
+write of a multi-megabyte weight document was measured to stall block finalisation beyond
+PBFT timing bounds. Model weights are therefore handed to an in-process background writer
+thread that persists them to CouchDB off the consensus path (a write conflict indicates
+the document was already stored by another validator and is treated as success), while
+the emitted \texttt{aggregation-request} event carries only the document identifier and
+content hash.
 
 The \texttt{aggregation-confirmation-tp} handles confirmation submissions from the
 designated aggregator. It re-fetches all per-node weight documents from CouchDB, verifies
@@ -567,10 +587,13 @@ Each compute node is extended with the \texttt{aggregation\_event\_handler}, run
 alongside the existing schedule and application-image event handlers. This handler
 subscribes to \texttt{aggregation-request} and \texttt{aggregation-confirmation}
 blockchain events. On receiving an \texttt{aggregation-request} event for a round in which
-the node is the designated aggregator, the handler stores the submitted weights in CouchDB
-under the document identifier recorded in the request transaction, then starts a collection
-timer. On timer expiry, the handler locks the round, fetches all accumulated weight
-documents, computes FedAvg, and submits the confirmation transaction. On receiving an
+the node is the designated aggregator, the handler starts a collection timer. On timer
+expiry, the handler locks the round, fetches all accumulated weight documents from CouchDB,
+computes FedAvg, and submits the confirmation transaction. Because weight documents are
+written asynchronously by the request transaction processor, the fetch applies a bounded
+retry with backoff to guard against read-after-write races; in practice the collection
+window provides ample margin, as the asynchronous write completes within seconds of the
+request transaction committing. On receiving an
 \texttt{aggregation-confirmation} event for a round it managed, the handler retrieves the
 confirmed global model from its in-memory cache and broadcasts it to all participating
 IoT nodes via authenticated ZMQ connections using the node ZMQ addresses recorded in the
@@ -592,7 +615,7 @@ receipt of trained weights, optionally applying a Byzantine attack before submis
 \subsection{Distributed Storage Architecture}
 
 Model weights are stored in a dedicated CouchDB database (\texttt{model\_weights}) rather
-than in blockchain state, as the JSON-serialised size of a model (approximately 240\,KB for
+than in blockchain state, as the JSON-serialised size of a model (approximately 5\,MB for
 MNISTNet) would cause excessive ledger growth across rounds. Each weight document stores the
 parameter tensors, a SHA-256 content hash for integrity verification, and metadata
 including the node identifier, aggregation round identifier, and submission timestamp.
@@ -618,8 +641,8 @@ from model parameter counts and the two-phase message pattern.
 \toprule
 Model & Parameters & Payload (JSON) & Total \\
 \midrule
-MNISTNet   & 62\,006  & $\approx$240\,KB  & $\approx$1.4\,MB \\
-CIFAR10Net & 290\,074 & $\approx$1\,120\,KB & $\approx$6.7\,MB \\
+MNISTNet   & 257\,162 & $\approx$5.4\,MB  & $\approx$59\,MB \\
+CIFAR10Net & 620\,810 & $\approx$13.0\,MB & $\approx$143\,MB \\
 \bottomrule
 \end{tabular}
 \vspace{2pt}
@@ -639,9 +662,9 @@ is maintained in \texttt{shared/models/mnist\_model.py} and included in the Dock
 context of every component that performs model weight manipulation or inference: the IoT
 node simulation, the federated training task container, and the aggregation confirmation
 transaction processor. MNISTNet is a three-layer convolutional neural network with
-approximately 62\,000 parameters designed for 28$\times$28 greyscale inputs.
+approximately 257\,000 parameters designed for 28$\times$28 greyscale inputs.
 CIFAR10Net extends this with batch normalisation and a wider feature hierarchy for
-32$\times$32 RGB inputs, totalling approximately 290\,000 parameters. Any architectural
+32$\times$32 RGB inputs, totalling approximately 621\,000 parameters. Any architectural
 discrepancy between the training and validation components would produce a
 \texttt{load\_state\_dict} shape mismatch at runtime, which model sanity Check~3 would
 detect and reject.
@@ -739,13 +762,18 @@ time. A sufficiently informed adversary with knowledge of the dataset could craf
 that pass validation while generalising poorly. Periodic rotation of the dataset, or the
 use of multiple independent partitions, would strengthen this check.
 
-\textbf{Aggregator selection via Redis.} The aggregator is selected from resource data
-stored in Redis, which is external to blockchain consensus. If validators observe
-inconsistent Redis state due to replication lag, they may select different aggregators.
-In practice, the effect is bounded: the round identifier is derived from workflow
-identifier and global round counter, both of which are in blockchain state, so any
-disagreement on aggregator identity produces a confirmation transaction that fails
-the proposer-identity check and is rejected, triggering a new round.
+\textbf{Aggregator crash within a round.} The aggregator is elected deterministically
+from the peer-registry membership index in blockchain state, so nodes that leave or
+crash rotate out of the election pool once their resource updates exceed the staleness
+threshold. However, if the elected aggregator crashes \emph{after} a round has started
+collecting but before submitting the confirmation, the round is not re-assigned: it
+remains in \textsc{collecting} until twice the aggregation timeout elapses, after which
+it is treated as \textsc{expired} and a new round is initiated. A deterministic fallback
+protocol, in which the next node in round-robin order assumes the aggregator role upon
+confirmation timeout, would eliminate this lost round and is left to future work.
+Election responsiveness is further bounded by the resource-update cadence: a node
+departure is only reflected in the membership index after its last update crosses the
+staleness threshold.
 
 \textbf{Single-model support per workflow.} The current implementation is parameterised
 for MNISTNet and CIFAR10Net. Support for arbitrary model architectures would require a

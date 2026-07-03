@@ -221,11 +221,17 @@ class MNISTFederatedNode:
         weight_init_start = time.time()
         
         if round_number == 1:
-            # Round 1: Initialize with random weights
-            logger.info(f"🎲 WEIGHT INITIALIZATION: Round 1 - Creating random weights")
-            logger.info(f"   • Method: PyTorch default initialization")
+            # Round 1: Initialize from a COMMON seed shared by all nodes. FedAvg requires
+            # all clients to start from the same initial model (McMahan et al., 2017);
+            # averaging independently-initialized networks yields a chance-level model,
+            # which the consensus validation pipeline (correctly) rejects. A fixed shared
+            # seed emulates a server-broadcast initial model without central coordination.
+            init_seed = int(os.getenv('MODEL_INIT_SEED', '42'))
+            torch.manual_seed(init_seed)
+            logger.info(f"🎲 WEIGHT INITIALIZATION: Round 1 - Common-seed initial weights")
+            logger.info(f"   • Method: PyTorch default initialization, shared seed {init_seed}")
             logger.info(f"   • Model: MNISTNet with 10 classes")
-            
+
             model = MNISTNet(num_classes=10)
             
             # Extract weights as nested lists (JSON serializable)

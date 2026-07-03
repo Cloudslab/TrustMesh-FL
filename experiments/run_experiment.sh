@@ -109,7 +109,10 @@ for run in $(seq 1 "$RUNS"); do
         # Inter-round think-time: uniform(20,60)s for experiment campaigns (default in the
         # simulation is uniform(90,300)s). Keeps nodes aligned within the 180s collection
         # window and roughly halves campaign wall-clock; per-phase metrics are unaffected.
-        ENV_VARS="TOTAL_NODES=$TOTAL_NODES_VAL NON_IID_ALPHA=$NON_IID_ALPHA AGGREGATION_TIMEOUT=$AGG_TIMEOUT MIN_NODES_FOR_AGGREGATION=$MIN_NODES INTER_ROUND_PAUSE_MIN=20 INTER_ROUND_PAUSE_MAX=60"
+        # AGGREGATION_WAIT_TIMEOUT=360: successful aggregation broadcasts ~2min after
+        # submission, so 6min is ample margin; bounds the cost of expected-failure rounds
+        # (Byzantine rejections) which otherwise wait the full default 600s every round.
+        ENV_VARS="TOTAL_NODES=$TOTAL_NODES_VAL NON_IID_ALPHA=$NON_IID_ALPHA AGGREGATION_TIMEOUT=$AGG_TIMEOUT MIN_NODES_FOR_AGGREGATION=$MIN_NODES INTER_ROUND_PAUSE_MIN=20 INTER_ROUND_PAUSE_MAX=60 AGGREGATION_WAIT_TIMEOUT=360"
 
         # Determine if this node is byzantine (highest indices)
         if [ "$BYZANTINE_ENABLED" = "true" ] && [ "$i" -ge "$NORMAL_COUNT" ]; then

@@ -672,16 +672,20 @@ class MNISTFederatedNode:
                     logger.error(f"   • Terminating federated learning session")
                     break
                 
-                # Wait for training to complete and get trained weights
+                # Wait for training to complete and get trained weights.
+                # Timeouts are env-configurable so experiment campaigns can bound the cost
+                # of expected-failure rounds (e.g. Byzantine rounds where validation rejects
+                # the aggregate and no model is ever broadcast).
+                training_wait_timeout = int(os.getenv('TRAINING_WAIT_TIMEOUT', '600'))
                 logger.info(f"\n⏳ WAITING FOR TRAINING COMPLETION")
                 logger.info(f"   • Schedule ID: {schedule_id}")
-                logger.info(f"   • Timeout: 600 seconds")
+                logger.info(f"   • Timeout: {training_wait_timeout} seconds")
                 logger.info(f"   • Waiting for compute node to process training data...")
-                
+
                 wait_start_time = time.time()
                 self.timer.start("training_wait", round_num)
                 trained_weights = await fed_response_manager.wait_for_training_completion(
-                    workflow_id, schedule_id, timeout=600  # 2 minutes timeout
+                    workflow_id, schedule_id, timeout=training_wait_timeout
                 )
                 self.timer.stop("training_wait", round_num)
                 wait_duration = time.time() - wait_start_time
@@ -720,14 +724,15 @@ class MNISTFederatedNode:
                 logger.info(f"   • Now waiting for global model aggregation...")
                 
                 # Wait for aggregated model
+                aggregation_wait_timeout = int(os.getenv('AGGREGATION_WAIT_TIMEOUT', '600'))
                 logger.info(f"\n⏳ WAITING FOR GLOBAL MODEL AGGREGATION")
                 logger.info(f"   • Local Round: {round_num}")
-                logger.info(f"   • Timeout: 600 seconds (10 minutes)")
+                logger.info(f"   • Timeout: {aggregation_wait_timeout} seconds")
                 logger.info(f"   • Waiting for next aggregated model (any global round)...")
-                
+
                 aggregation_wait_start = time.time()
                 self.timer.start("aggregation_wait", round_num)
-                aggregated_weights = await fed_response_manager.wait_for_next_aggregated_model(workflow_id, timeout=600)
+                aggregated_weights = await fed_response_manager.wait_for_next_aggregated_model(workflow_id, timeout=aggregation_wait_timeout)
                 self.timer.stop("aggregation_wait", round_num)
                 aggregation_wait_duration = time.time() - aggregation_wait_start
                 

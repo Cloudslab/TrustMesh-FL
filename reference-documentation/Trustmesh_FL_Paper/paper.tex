@@ -14,6 +14,8 @@
 \usepackage{xcolor}
 \usepackage{multirow}
 \usepackage{makecell}
+\usepackage{tikz}
+\usetikzlibrary{positioning,fit,arrows.meta,backgrounds,calc}
 \usepackage{hyperref}
 \hypersetup{colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue}
 
@@ -310,13 +312,58 @@ ranges from 3.25 to 4.19 seconds across testbeds of 4 to 16 compute nodes~\cite{
 
 \begin{figure}[t]
     \centering
-    \figplaceholder{1.8cm}{%
-        TrustMesh-FL three-layer architecture showing the Network Management,
-        Computation, and Perception layers, augmented with the FL-specific components
-        introduced in this work: \texttt{aggregation-request-tp},
-        \texttt{aggregation-confirmation-tp}, \texttt{validation-dataset-distributor},
-        \texttt{aggregation\_event\_handler}, and \texttt{federated\_response\_manager}.%
-    }
+    \begin{tikzpicture}[
+        font=\scriptsize,
+        comp/.style={draw=black!60, fill=black!8, rounded corners=1pt,
+                     minimum height=4.5mm, inner sep=2pt, align=center},
+        flcomp/.style={draw=blue!60!black, fill=blue!12, rounded corners=1pt,
+                       minimum height=4.5mm, inner sep=2pt, align=center},
+        layer/.style={draw=black!50, rounded corners=2pt, inner sep=3.5pt},
+        lname/.style={font=\scriptsize\bfseries, anchor=west},
+        node distance=1.6mm and 1.6mm
+    ]
+    % ---- Network Management Layer ----
+    \node[comp] (depclient) {Application\\Deployment Client};
+    \node[comp, right=3mm of depclient] (wfclient) {Workflow\\Creation Client};
+    \begin{scope}[on background layer]
+        \node[layer, fit=(depclient)(wfclient), label={[lname]north west:Network Management Layer},
+              inner ysep=5.5mm, yshift=-1.5mm] (mgmt) {};
+    \end{scope}
+
+    % ---- Computation Layer ----
+    \node[comp, below=9mm of depclient.south west, anchor=north west] (validator) {Sawtooth Validator\\(PBFT)};
+    \node[comp, right=of validator] (schedtps) {Scheduling\\TPs};
+    \node[flcomp, right=of schedtps] (aggreqtp) {aggregation-\\request-tp};
+    \node[flcomp, right=of aggreqtp] (aggconftp) {aggregation-\\confirmation-tp};
+    \node[comp, below=of validator] (taskexec) {Task Executor\\(DinD)};
+    \node[comp, right=of taskexec] (schedhandler) {Schedule\\Event Handler};
+    \node[flcomp, right=of schedhandler] (agghandler) {Aggregation\\Event Handler};
+    \node[flcomp, right=of agghandler] (valdist) {Validation Dataset\\Distributor};
+    \node[comp, below=of taskexec] (couchdb) {CouchDB Cluster\\(model\_weights)};
+    \node[comp, right=of couchdb] (redis) {Redis\\Cluster};
+    \node[comp, right=of redis] (peereg) {Peer Registry\\(membership)};
+    \begin{scope}[on background layer]
+        \node[layer, fit=(validator)(aggconftp)(couchdb)(peereg),
+              label={[lname]north west:Computation Layer ($\times$4 compute nodes)},
+              inner ysep=5.5mm, yshift=-1.5mm] (compl) {};
+    \end{scope}
+
+    % ---- Perception Layer ----
+    \node[comp, below=23mm of taskexec.south west, anchor=north west] (simulation) {FL Simulation\\(two-phase driver)};
+    \node[flcomp, right=of simulation] (fedresp) {Federated Response\\Manager (ZMQ)};
+    \node[comp, right=of fedresp] (txinit) {Transaction\\Initiator};
+    \begin{scope}[on background layer]
+        \node[layer, fit=(simulation)(txinit),
+              label={[lname]north west:Perception Layer ($\times$4--10 IoT nodes)},
+              inner ysep=5.5mm, yshift=-1.5mm] (perc) {};
+    \end{scope}
+
+    % ---- Inter-layer arrows ----
+    \draw[-{Stealth}, black!60] (mgmt.south) -- (compl.north)
+        node[midway, right, font=\tiny] {app images / workflow DAGs};
+    \draw[{Stealth}-{Stealth}, black!60] (compl.south) -- (perc.north)
+        node[midway, right, font=\tiny] {transactions / ZMQ (CURVE)};
+    \end{tikzpicture}
     \caption{%
         \tmfl{} system architecture. Grey components are inherited unchanged from
         \tm{}~\cite{rangwala2025trustmesh}; blue components are introduced in this work.%
@@ -367,18 +414,53 @@ Fig.~\ref{fig:protocol} shows the two-phase protocol as a sequence diagram.
 
 \begin{figure*}[t]
     \centering
-    \figplaceholder{3.5cm}{%
-        Sequence diagram of the two-phase \tmfl{} protocol.
-        Phase~1 (left): IoT node submits training data; scheduling pipeline assigns task
-        to compute node; compute node executes training container and returns weights via
-        ZMQ.
-        Phase~2 (right): IoT node submits trained weights via aggregation-request-tp;
-        aggregator compute node collects contributions, computes FedAvg, and submits
-        confirmation transaction; aggregation-confirmation-tp on every validator
-        independently re-executes FedAvg, runs the four-stage validation pipeline, and
-        achieves PBFT consensus; confirmed global model is broadcast to IoT nodes via ZMQ.%
-    }
-    \caption{Two-phase \tmfl{} protocol sequence diagram.}
+    \begin{tikzpicture}[
+        font=\scriptsize,
+        actor/.style={draw, fill=black!8, rounded corners=1pt, minimum height=5mm,
+                      inner xsep=3pt, align=center},
+        flactor/.style={actor, draw=blue!60!black, fill=blue!12},
+        msg/.style={-{Stealth}, black!70},
+        note/.style={font=\tiny, midway, above, sloped=false},
+        lifeline/.style={black!30, dashed}
+    ]
+    % Lifelines (x positions)
+    \node[actor]   (iot)   at (0,0)    {IoT Node};
+    \node[actor]   (sched) at (3.0,0)  {\tm{} Scheduling\\Pipeline};
+    \node[actor]   (exec)  at (6.0,0)  {Compute Node\\(Task Executor)};
+    \node[flactor] (reqtp) at (9.0,0)  {aggregation-request-tp\\(all validators)};
+    \node[flactor] (aggh)  at (12.2,0) {Aggregator\\Event Handler};
+    \node[flactor] (conftp)at (15.2,0) {aggregation-confirmation-tp\\(all validators)};
+
+    \foreach \n/\len in {iot/8.6, sched/8.6, exec/8.6, reqtp/8.6, aggh/8.6, conftp/8.6}
+        \draw[lifeline] (\n.south) -- ++(0,-\len);
+
+    % Phase labels
+    \node[font=\tiny\bfseries, anchor=west, black!60] at (-1.1,-0.6) {Phase 1};
+    \node[font=\tiny\bfseries, anchor=west, black!60] at (-1.1,-3.4) {Phase 2};
+
+    % ---- Phase 1: Local Training ----
+    \draw[msg] ($(iot.south)+(0,-0.6)$)   -- ($(sched.south)+(0,-0.6)$)  node[note] {training data txn};
+    \draw[msg] ($(sched.south)+(0,-1.2)$) -- ($(exec.south)+(0,-1.2)$)   node[note] {LCDWRR schedule (consensus)};
+    \draw[msg] ($(exec.south)+(0,-1.8)$)  -- ++(1.1,0) node[right, font=\tiny] {run training container};
+    \draw[msg] ($(exec.south)+(0,-2.5)$)  -- ($(iot.south)+(0,-2.5)$)    node[note] {trained weights (ZMQ, CURVE)};
+
+    % ---- Phase 2: Consensus-Validated Aggregation ----
+    \draw[msg] ($(iot.south)+(0,-3.4)$)   -- ($(reqtp.south)+(0,-3.4)$)  node[note] {aggregation request (weights in payload)};
+    \draw[msg] ($(reqtp.south)+(0,-4.0)$) -- ++(1.2,0) node[right, font=\tiny, align=left]
+        {elect aggregator (round-robin,\\ peer-registry state); metadata $\to$ state;\\ weights $\to$ CouchDB (async)};
+    \draw[msg] ($(reqtp.south)+(0,-5.0)$) -- ($(aggh.south)+(0,-5.0)$)   node[note] {aggregation-request event};
+    \draw[msg] ($(aggh.south)+(0,-5.6)$)  -- ++(1.05,0) node[right, font=\tiny, align=left]
+        {collection window (180\,s);\\ lock round; fetch weights;\\ compute FedAvg};
+    \draw[msg] ($(aggh.south)+(0,-6.6)$)  -- ($(conftp.south)+(0,-6.6)$) node[note] {confirmation txn};
+    \draw[msg] ($(conftp.south)+(0,-7.2)$) -- ++(1.0,0) node[right, font=\tiny, align=left]
+        {re-fetch weights, verify hashes;\\ re-compute FedAvg ($10^{-6}$ tol.);\\ 4-stage validation; PBFT commit};
+    \draw[msg] ($(conftp.south)+(0,-8.0)$) -- ($(aggh.south)+(0,-8.0)$)  node[note] {confirmation event};
+    \draw[msg] ($(aggh.south)+(0,-8.5)$)  -- ($(iot.south)+(0,-8.5)$)    node[note] {validated global model (ZMQ, CURVE)};
+    \end{tikzpicture}
+    \caption{Two-phase \tmfl{} protocol. Phase~1 reuses the \tm{} scheduling and execution
+    pipeline unchanged; Phase~2 executes FedAvg as a blockchain transaction that every PBFT
+    validator independently re-computes and validates before the global model is committed
+    and broadcast.}
     \label{fig:protocol}
 \end{figure*}
 
@@ -712,7 +794,85 @@ Parameter & Default & Description \\
 \label{sec:evaluation}
 % ============================================================================
 
-% TODO
+The evaluation addresses four questions. (RQ1)~Does \tmfl{} converge under realistic
+non-IID data distributions? (RQ2)~What per-round latency does consensus-validated
+aggregation add relative to a non-validated baseline? (RQ3)~Are Byzantine weight
+manipulations detected and rejected by the validation pipeline before reaching
+participating nodes? (RQ4)~How does round completion time scale with the number of
+participating IoT nodes?
+
+\subsection{Experimental Setup}
+\label{sec:setup}
+
+All experiments were conducted on a physical fifteen-node K3s (v1.35.5) cluster
+provisioned from an OpenStack research cloud, with node roles and hardware detailed in
+Table~\ref{tab:testbed}. The four compute nodes jointly operate the Hyperledger Sawtooth
+1.2 network with PBFT consensus (sawtooth-pbft-engine 1.0.3), the CouchDB and Redis
+clusters, and the Docker-in-Docker task execution environment. Model training and
+validation use PyTorch (CPU) with the MNISTNet architecture of
+Section~\ref{sec:implementation} (257\,162 parameters).
+
+\begin{table}[t]
+\centering
+\caption{Experimental Testbed Configuration}
+\label{tab:testbed}
+\begin{tabular}{llll}
+\toprule
+Layer & Node Type & Qty & Configuration \\
+\midrule
+Network Mgmt & Control node & 1  & 20 vCPU, 80\,GB RAM \\
+Computation  & Compute node & 4  & 12 vCPU, 48\,GB RAM \\
+Perception   & IoT node     & 10 & 4 vCPU, 16\,GB RAM \\
+\bottomrule
+\end{tabular}
+\vspace{2pt}
+
+{\footnotesize All nodes run Debian GNU/Linux 11 (kernel 5.10, amd64).}
+\end{table}
+
+Unless stated otherwise, each configuration is executed as three independent runs of
+the full federated learning session, and reported values are means across runs. Each
+IoT node samples 500 training examples from its Dirichlet partition per round and
+performs three local epochs. The aggregation collection window is 180\,s with
+\texttt{MIN\_NODES\_FOR\_AGGREGATION}~$=1$; nodes pause for a uniformly random
+20--60\,s think-time between rounds, emulating asynchronous device availability
+relative to the collection window. Per-phase latencies are captured on each IoT node
+by a structured timing instrument that records wall-clock durations for transaction
+submission, training wait, aggregation wait, and total round time as JSON lines;
+compute-node and transaction-processor logs provide the validation verdicts.
+
+Four metrics are reported. \emph{Validation accuracy} is the accuracy of the
+consensus-validated global model on the shared 1\,000-sample validation dataset, as
+computed independently by every validator during Check~4. \emph{Local test accuracy}
+is each node's accuracy on its held-out local test partition, averaged across nodes.
+\emph{Round completion time} is the wall-clock duration of a full
+train--aggregate--deliver cycle measured at the IoT node, excluding the inter-round
+pause. \emph{Detection rate} is the fraction of aggregation rounds containing a
+Byzantine contribution whose aggregate was rejected by the validation pipeline.
+
+\subsection{Convergence under Non-IID Data (RQ1)}
+\label{sec:eval-convergence}
+
+\textcolor{red}{[TBD-CONVERGENCE: convergence_accuracy figure, per-alpha convergence
+narrative, rounds-to-threshold numbers]}
+
+\subsection{Overhead of Consensus-Validated Aggregation (RQ2)}
+\label{sec:eval-overhead}
+
+\textcolor{red}{[TBD-OVERHEAD: timing_breakdown + overhead figures, X\% overhead
+number, phase decomposition narrative]}
+
+\subsection{Byzantine Attack Detection (RQ3)}
+\label{sec:eval-byzantine}
+
+\textcolor{red}{[TBD-BYZANTINE: table_byzantine, detection rates per attack class,
+which checks triggered, honest-round impact]}
+
+\subsection{Scalability (RQ4)}
+\label{sec:eval-scale}
+
+\textcolor{red}{[TBD-SCALE: scalability figure, round time vs N narrative,
+sub-linearity assessment]}
 
 % ============================================================================
 \section{Discussion}

@@ -56,7 +56,7 @@ echo "Discovered IoT pods: ${IOT_PODS[*]}"
 COMPUTE_PODS=($(kubectl get pods -o name | grep -E "^pod/pbft-[0-9]" | sed 's|pod/||' | sort))
 echo "Discovered compute pods: ${COMPUTE_PODS[*]}"
 
-# SKIP_VALIDATION requires updating the deployment (env on a running pod is immutable). (env on a running pod is immutable).
+# SKIP_VALIDATION requires updating the deployment (env on a running pod is immutable).
 # This triggers a rolling restart of pbft pods before the experiment runs.
 if [ "$SKIP_VALIDATION" = "true" ]; then
     echo "Setting SKIP_VALIDATION=true on pbft deployments (triggers rolling restart)..."
@@ -75,8 +75,9 @@ fi
 # Calculate which nodes are byzantine (highest indices)
 NORMAL_COUNT=$(( IOT_NODES - BYZANTINE_COUNT ))
 
-# Run loop
-for run in $(seq 1 "$RUNS"); do
+# Run loop (START_RUN lets a campaign resume mid-config after an interruption)
+START_RUN="${START_RUN:-1}"
+for run in $(seq "$START_RUN" "$RUNS"); do
     echo ""
     echo "======== Run $run / $RUNS ========"
     RUN_DIR="$RESULTS_BASE/$EXPERIMENT_NAME/run_$run"
@@ -129,12 +130,43 @@ for run in $(seq 1 "$RUNS"); do
         PIDS+=($!)
     done
 
-    # Wait for all background processes
+    # Wait for all background processes, with a watchdog: kubectl exec sessions
+    # sometimes never return after the remote process exits, which would stall the
+    # run forever. Poll the per-node logs for the simulation's completion/failure
+    # banner and kill lingering exec sessions once every node has finished (or the
+    # logs have gone quiet for STALL_LIMIT seconds).
     echo "  Waiting for all nodes to complete..."
+    STALL_LIMIT=900
+    last_activity=$(date +%s)
+    while :; do
+        alive=0
+        for pid in "${PIDS[@]}"; do
+            kill -0 "$pid" 2>/dev/null && alive=$((alive + 1))
+        done
+        [ "$alive" -eq 0 ] && break
+
+        done_count=$(grep -l -E "APPLICATION (COMPLETED SUCCESSFULLY|FAILED)" \
+            "$RUN_DIR/logs/"*_simulation.log 2>/dev/null | wc -l)
+        newest=$(find "$RUN_DIR/logs" -name '*_simulation.log' -newermt "@$last_activity" | head -1)
+        [ -n "$newest" ] && last_activity=$(date +%s)
+        now=$(date +%s)
+
+        if [ "$done_count" -ge "${#PIDS[@]}" ]; then
+            echo "  All ${#PIDS[@]} nodes report completion; reaping exec sessions..."
+            sleep 30
+            for pid in "${PIDS[@]}"; do kill "$pid" 2>/dev/null || true; done
+            break
+        elif [ $(( now - last_activity )) -gt "$STALL_LIMIT" ]; then
+            echo "  WARNING: no log activity for ${STALL_LIMIT}s; killing exec sessions."
+            for pid in "${PIDS[@]}"; do kill "$pid" 2>/dev/null || true; done
+            break
+        fi
+        sleep 20
+    done
+
     FAILED=0
     for pid in "${PIDS[@]}"; do
-        if ! wait "$pid"; then
-            echo "  WARNING: Process $pid exited with non-zero status"
+        if ! wait "$pid" 2>/dev/null; then
             FAILED=$((FAILED + 1))
         fi
     done

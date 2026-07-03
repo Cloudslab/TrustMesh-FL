@@ -1117,7 +1117,10 @@ docker save -o auto-docker-deployment/docker-image-client/generate-alerts.tar ge
 # Part 2: Create redis cluster
 mkdir -p kubernetes-manifests/generated
 
-/bin/bash ./redis-setup.sh "$num_compute_nodes"
+if ! /bin/bash ./redis-setup.sh "$num_compute_nodes"; then
+    echo "ERROR: Redis cluster setup failed; aborting network deployment." >&2
+    exit 1
+fi
 
 # Part 3: Generate YAML file for config and secrets
 # Create the PBFT key generation job YAML

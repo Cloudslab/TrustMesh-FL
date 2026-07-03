@@ -255,21 +255,30 @@ wait_for_redis_pods
 # Get the list of Redis node IPs
 node_ips=$(kubectl get pods -l app=redis-cluster -o jsonpath='{range.items[*]}{.status.podIP}{" "}{end}')
 
-# Create the Redis Cluster
+# Create the Redis Cluster.
+# --cluster-yes accepts the proposed slot configuration non-interactively: the previous
+# `-it` + interactive "type 'yes'" prompt silently aborted cluster creation whenever the
+# deploy ran without a TTY (e.g. via nohup/CI), leaving the cluster in state 'fail' and
+# every Redis-dependent TrustMesh component dead.
 echo "Creating Redis Cluster with $num_redis_nodes nodes..."
-kubectl exec -it redis-cluster-0 -- redis-cli --cluster create \
+kubectl exec -i redis-cluster-0 -- redis-cli --cluster create \
     $(echo $node_ips | sed -e 's/\([0-9.]*\)/\1:6379/g') \
     --cluster-replicas $(( (num_redis_nodes - 3) / 3 )) \
+    --cluster-yes \
     --tls --cert /ssl/redis.crt --key /ssl/redis.key --cacert /ssl/ca.crt -a $redis_password
 
 echo "Waiting for cluster to stabilize..."
 sleep 10  # Give the cluster some time to stabilize
 
-# Check cluster status with retries
+# Check cluster status with retries. A non-operational Redis cluster must abort the
+# deployment: schedule/aggregation event handlers and the task executor exit on startup
+# without Redis, producing a half-alive network that is much harder to debug later.
 if check_cluster_status; then
     echo "Redis Cluster is now fully operational."
 else
-    echo "Warning: Redis Cluster may not be fully operational. Please check manually."
+    echo "ERROR: Redis Cluster failed to become operational. Aborting deployment." >&2
+    rm -r ssl/
+    exit 1
 fi
 
 rm -r ssl/

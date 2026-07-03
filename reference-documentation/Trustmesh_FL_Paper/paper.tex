@@ -331,7 +331,7 @@ ranges from 3.25 to 4.19 seconds across testbeds of 4 to 16 compute nodes~\cite{
     \end{scope}
 
     % ---- Computation Layer ----
-    \node[comp, below=9mm of depclient.south west, anchor=north west] (validator) {Sawtooth Validator\\(PBFT)};
+    \node[comp, below=16mm of depclient.south west, anchor=north west] (validator) {Sawtooth Validator\\(PBFT)};
     \node[comp, right=of validator] (schedtps) {Scheduling\\TPs};
     \node[flcomp, right=of schedtps] (aggreqtp) {aggregation-\\request-tp};
     \node[flcomp, right=of aggreqtp] (aggconftp) {aggregation-\\confirmation-tp};
@@ -349,7 +349,7 @@ ranges from 3.25 to 4.19 seconds across testbeds of 4 to 16 compute nodes~\cite{
     \end{scope}
 
     % ---- Perception Layer ----
-    \node[comp, below=23mm of taskexec.south west, anchor=north west] (simulation) {FL Simulation\\(two-phase driver)};
+    \node[comp, below=26mm of taskexec.south west, anchor=north west] (simulation) {FL Simulation\\(two-phase driver)};
     \node[flcomp, right=of simulation] (fedresp) {Federated Response\\Manager (ZMQ)};
     \node[comp, right=of fedresp] (txinit) {Transaction\\Initiator};
     \begin{scope}[on background layer]
@@ -427,9 +427,9 @@ Fig.~\ref{fig:protocol} shows the two-phase protocol as a sequence diagram.
     \node[actor]   (iot)   at (0,0)    {IoT Node};
     \node[actor]   (sched) at (3.0,0)  {\tm{} Scheduling\\Pipeline};
     \node[actor]   (exec)  at (6.0,0)  {Compute Node\\(Task Executor)};
-    \node[flactor] (reqtp) at (9.0,0)  {aggregation-request-tp\\(all validators)};
-    \node[flactor] (aggh)  at (12.2,0) {Aggregator\\Event Handler};
-    \node[flactor] (conftp)at (15.2,0) {aggregation-confirmation-tp\\(all validators)};
+    \node[flactor] (reqtp) at (8.8,0)  {aggregation-request-tp\\(all validators)};
+    \node[flactor] (aggh)  at (11.9,0) {Aggregator\\Event Handler};
+    \node[flactor] (conftp)at (14.9,0) {aggregation-confirmation-tp\\(all validators)};
 
     \foreach \n/\len in {iot/8.6, sched/8.6, exec/8.6, reqtp/8.6, aggh/8.6, conftp/8.6}
         \draw[lifeline] (\n.south) -- ++(0,-\len);
@@ -446,14 +446,14 @@ Fig.~\ref{fig:protocol} shows the two-phase protocol as a sequence diagram.
 
     % ---- Phase 2: Consensus-Validated Aggregation ----
     \draw[msg] ($(iot.south)+(0,-3.4)$)   -- ($(reqtp.south)+(0,-3.4)$)  node[note] {aggregation request (weights in payload)};
-    \draw[msg] ($(reqtp.south)+(0,-4.0)$) -- ++(1.2,0) node[right, font=\tiny, align=left]
-        {elect aggregator (round-robin,\\ peer-registry state); metadata $\to$ state;\\ weights $\to$ CouchDB (async)};
+    \draw[msg] ($(reqtp.south)+(0,-4.0)$) -- ++(0.4,0) node[right, font=\tiny, align=left]
+        {elect aggregator\\ (round-robin, peer registry);\\ metadata $\to$ state;\\ weights $\to$ CouchDB (async)};
     \draw[msg] ($(reqtp.south)+(0,-5.0)$) -- ($(aggh.south)+(0,-5.0)$)   node[note] {aggregation-request event};
-    \draw[msg] ($(aggh.south)+(0,-5.6)$)  -- ++(1.05,0) node[right, font=\tiny, align=left]
+    \draw[msg] ($(aggh.south)+(0,-5.6)$)  -- ++(0.4,0) node[right, font=\tiny, align=left]
         {collection window (180\,s);\\ lock round; fetch weights;\\ compute FedAvg};
     \draw[msg] ($(aggh.south)+(0,-6.6)$)  -- ($(conftp.south)+(0,-6.6)$) node[note] {confirmation txn};
-    \draw[msg] ($(conftp.south)+(0,-7.2)$) -- ++(1.0,0) node[right, font=\tiny, align=left]
-        {re-fetch weights, verify hashes;\\ re-compute FedAvg ($10^{-6}$ tol.);\\ 4-stage validation; PBFT commit};
+    \draw[msg] ($(conftp.south)+(0,-7.2)$) -- ++(0.4,0) node[right, font=\tiny, align=left]
+        {re-fetch weights, verify\\ hashes; re-compute FedAvg\\ ($10^{-6}$ tol.); 4-stage\\ validation; PBFT commit};
     \draw[msg] ($(conftp.south)+(0,-8.0)$) -- ($(aggh.south)+(0,-8.0)$)  node[note] {confirmation event};
     \draw[msg] ($(aggh.south)+(0,-8.5)$)  -- ($(iot.south)+(0,-8.5)$)    node[note] {validated global model (ZMQ, CURVE)};
     \end{tikzpicture}
@@ -778,6 +778,8 @@ default values used in all experiments unless otherwise specified.
 \centering
 \caption{\tmfl{} Configurable Parameters}
 \label{tab:config}
+\footnotesize
+\setlength{\tabcolsep}{3.5pt}
 \begin{tabular}{lll}
 \toprule
 Parameter & Default & Description \\

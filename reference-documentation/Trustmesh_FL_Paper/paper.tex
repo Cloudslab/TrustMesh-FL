@@ -507,10 +507,12 @@ while the membership index is initially populating. The round is assigned status
 \subsubsection{Contribution Collection}
 
 Subsequent aggregation request submissions from other IoT nodes are appended to the active
-round. Model weights are stored in CouchDB by the designated aggregator's event handler;
-only the CouchDB document identifiers, SHA-256 content hashes, sample counts, and IoT node
-connection details are recorded in blockchain state. A configurable collection window
-(default: 180 seconds) allows nodes to join the round asynchronously.
+round. Model weights are persisted to CouchDB by a background writer thread inside the
+request transaction processor, off the consensus hot path
+(Section~\ref{sec:implementation}); only the CouchDB document identifiers, SHA-256 content
+hashes, sample counts, and IoT node connection details are recorded in blockchain state. A
+configurable collection window (default: 180 seconds) allows nodes to join the round
+asynchronously.
 
 \subsubsection{Aggregation and Confirmation}
 

@@ -453,7 +453,7 @@ Fig.~\ref{fig:protocol} shows the two-phase protocol as a sequence diagram.
         {collection window (180\,s);\\ lock round; fetch weights;\\ compute FedAvg};
     \draw[msg] ($(aggh.south)+(0,-6.6)$)  -- ($(conftp.south)+(0,-6.6)$) node[note] {confirmation txn};
     \draw[msg] ($(conftp.south)+(0,-7.2)$) -- ++(0.4,0) node[right, font=\tiny, align=left]
-        {re-fetch weights, verify\\ hashes; re-compute FedAvg\\ ($10^{-6}$ tol.); 4-stage\\ validation; PBFT commit};
+        {re-fetch weights,\\ verify hashes;\\ re-compute FedAvg\\ ($10^{-6}$ tol.);\\ 4-stage validation;\\ PBFT commit};
     \draw[msg] ($(conftp.south)+(0,-8.0)$) -- ($(aggh.south)+(0,-8.0)$)  node[note] {confirmation event};
     \draw[msg] ($(aggh.south)+(0,-8.5)$)  -- ($(iot.south)+(0,-8.5)$)    node[note] {validated global model (ZMQ, CURVE)};
     \end{tikzpicture}
@@ -785,12 +785,12 @@ default values used in all experiments unless otherwise specified.
 Parameter & Default & Description \\
 \midrule
 \texttt{TOTAL\_NODES}                 & 5     & Participating IoT nodes \\
-\texttt{NON\_IID\_ALPHA}              & 0.5   & Dirichlet concentration $\alpha$ \\
-\texttt{AGGREGATION\_TIMEOUT}         & 180\,s & Collection window duration \\
+\texttt{NON\_IID\_ALPHA}              & 0.5   & Dirichlet $\alpha$ \\
+\texttt{AGGREGATION\_TIMEOUT}         & 180\,s & Collection window \\
 \texttt{MIN\_NODES\_FOR\_AGGREGATION} & 1     & Minimum nodes to proceed \\
-\texttt{MIN\_ACCURACY\_THRESHOLD}     & 0.30  & Validation accuracy floor $\tau_a$ \\
-\texttt{MAX\_WEIGHT\_MAGNITUDE}       & 10.0  & Weight magnitude bound $\tau_w$ \\
-\texttt{SKIP\_VALIDATION}             & false & Bypass pipeline (measurement only) \\
+\texttt{MIN\_ACCURACY\_THRESHOLD}     & 0.30  & Accuracy floor $\tau_a$ \\
+\texttt{MAX\_WEIGHT\_MAGNITUDE}       & 10.0  & Magnitude bound $\tau_w$ \\
+\texttt{SKIP\_VALIDATION}             & false & Bypass validation checks \\
 \bottomrule
 \end{tabular}
 \end{table}

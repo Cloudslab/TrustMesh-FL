@@ -106,7 +106,10 @@ for run in $(seq 1 "$RUNS"); do
         node_label=$(echo "$pod" | grep -oE 'iot-[0-9]+')
         LOG_FILE="$RUN_DIR/logs/${node_label}_simulation.log"
 
-        ENV_VARS="TOTAL_NODES=$TOTAL_NODES_VAL NON_IID_ALPHA=$NON_IID_ALPHA AGGREGATION_TIMEOUT=$AGG_TIMEOUT MIN_NODES_FOR_AGGREGATION=$MIN_NODES"
+        # Inter-round think-time: uniform(20,60)s for experiment campaigns (default in the
+        # simulation is uniform(90,300)s). Keeps nodes aligned within the 180s collection
+        # window and roughly halves campaign wall-clock; per-phase metrics are unaffected.
+        ENV_VARS="TOTAL_NODES=$TOTAL_NODES_VAL NON_IID_ALPHA=$NON_IID_ALPHA AGGREGATION_TIMEOUT=$AGG_TIMEOUT MIN_NODES_FOR_AGGREGATION=$MIN_NODES INTER_ROUND_PAUSE_MIN=20 INTER_ROUND_PAUSE_MAX=60"
 
         # Determine if this node is byzantine (highest indices)
         if [ "$BYZANTINE_ENABLED" = "true" ] && [ "$i" -ge "$NORMAL_COUNT" ]; then

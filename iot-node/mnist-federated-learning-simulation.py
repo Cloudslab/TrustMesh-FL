@@ -773,8 +773,12 @@ class MNISTFederatedNode:
                 logger.info(f"   • Phases completed: Training → Aggregation → Validation")
                 
                 if round_num < max_rounds:
-                    # Random wait time between 1.5-5 minutes after each round
-                    wait_time_seconds = random.uniform(90, 300)  # 1.5 to 5 minutes
+                    # Random think-time between rounds, simulating IoT node availability.
+                    # Range is env-configurable so experiment campaigns can trade wall-clock
+                    # for tighter round alignment; per-phase timing metrics are unaffected.
+                    pause_min = float(os.getenv('INTER_ROUND_PAUSE_MIN', '90'))
+                    pause_max = float(os.getenv('INTER_ROUND_PAUSE_MAX', '300'))
+                    wait_time_seconds = random.uniform(pause_min, pause_max)
                     wait_time_minutes = wait_time_seconds / 60
                     
                     logger.info(f"   • Preparing for round {round_num + 1}...")

@@ -517,6 +517,11 @@ class MNISTFederatedNode:
             if self.byzantine_simulator:
                 logger.warning(f"APPLYING BYZANTINE ATTACK: {self.byzantine_simulator.attack_mode}")
                 trained_weights = self.byzantine_simulator.apply(trained_weights)
+                # Instrument for detection-rate analysis: one 'submitted' event per
+                # poisoned contribution; the round outcome (accepted/rejected) is
+                # recorded after the aggregation wait in the main loop.
+                self.timer.record_event('byzantine_update_submitted', round_number,
+                                        extra={'attack_mode': self.byzantine_simulator.attack_mode})
 
             logger.info(f"📊 WEIGHT ANALYSIS: Analyzing trained weights for aggregation")
             logger.info(f"   • Weight layers received: {len(trained_weights)}")
@@ -735,7 +740,15 @@ class MNISTFederatedNode:
                 aggregated_weights = await fed_response_manager.wait_for_next_aggregated_model(workflow_id, timeout=aggregation_wait_timeout)
                 self.timer.stop("aggregation_wait", round_num)
                 aggregation_wait_duration = time.time() - aggregation_wait_start
-                
+
+                # Detection-rate instrumentation: on a Byzantine node, the round outcome
+                # tells whether the poisoned aggregate was rejected by consensus validation
+                # (no model is broadcast for a rejected round) or slipped through.
+                if self.byzantine_simulator:
+                    outcome = 'byzantine_update_accepted' if aggregated_weights else 'byzantine_update_rejected'
+                    self.timer.record_event(outcome, round_num,
+                                            extra={'attack_mode': self.byzantine_simulator.attack_mode})
+
                 if aggregated_weights:
                     logger.info(f"✅ GLOBAL MODEL RECEIVED SUCCESSFULLY")
                     logger.info(f"   • Aggregation wait duration: {aggregation_wait_duration:.1f}s")

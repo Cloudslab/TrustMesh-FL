@@ -63,7 +63,7 @@ def extract_metrics(results_dir, experiment):
                     r = rec['round']
                     if 'accuracy' in rec['extra']:
                         round_acc.setdefault(r, []).append(rec['extra']['accuracy'])
-                    if 'loss' in rec['extra']:
+                    if rec['extra'].get('loss') is not None:
                         round_loss.setdefault(r, []).append(rec['extra']['loss'])
         # Average across nodes within a single run
         for r, vals in round_acc.items():
@@ -125,7 +125,7 @@ def main():
               "Expected directories like convergence-*/run_*/iot-simulation_*.jsonl")
 
     plot_metric(acc_data, 'Test Accuracy', 'convergence_accuracy', args.output_dir)
-    plot_metric(loss_data, 'Training Loss', 'convergence_loss', args.output_dir)
+    plot_metric(loss_data, 'Validation Loss', 'convergence_loss', args.output_dir)
 
 
 if __name__ == '__main__':

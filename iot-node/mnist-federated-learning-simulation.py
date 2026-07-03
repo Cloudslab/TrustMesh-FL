@@ -486,7 +486,8 @@ class MNISTFederatedNode:
             
             # Store for tracking
             self.local_model = model
-            
+            self.last_eval_loss = loss
+
             return accuracy
             
         except Exception as e:
@@ -767,7 +768,9 @@ class MNISTFederatedNode:
                     validation_start = time.time()
                     self.timer.start("local_validation", round_num)
                     local_accuracy = self.evaluate_model_locally(aggregated_weights)
-                    self.timer.stop("local_validation", round_num, extra={"accuracy": local_accuracy})
+                    self.timer.stop("local_validation", round_num,
+                                    extra={"accuracy": local_accuracy,
+                                           "loss": getattr(self, "last_eval_loss", None)})
                     validation_duration = time.time() - validation_start
                     
                     logger.info(f"✅ LOCAL VALIDATION COMPLETED")

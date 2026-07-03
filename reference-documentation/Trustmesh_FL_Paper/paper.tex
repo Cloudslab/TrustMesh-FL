@@ -983,18 +983,19 @@ FL systems across dimensions directly relevant to the trust properties of aggreg
 \centering
 \caption{Comparison of Blockchain-Integrated Federated Learning Systems}
 \label{tab:related}
-\footnotesize
+\scriptsize
+\setlength{\tabcolsep}{4pt}
 \begin{tabular}{lllll}
 \toprule
 System & Aggregation computed by & Correctness mechanism & Update screening & Trust assumption \\
 \midrule
-BlockFL~\cite{kim2020blockchained}   & Each device, off-chain & None (updates recorded on-chain) & Miner cross-verification & Honest miner majority \\
-BFLC~\cite{li2021bflc}               & Elected committee & Committee scoring & Committee validation scores & Honest committee majority \\
+BlockFL~\cite{kim2020blockchained}   & Each device, off-chain & None (ledger record only) & Miner cross-verification & Honest miner majority \\
+BFLC~\cite{li2021bflc}               & Elected committee & Committee consensus & Committee update scoring & Honest committee majority \\
 DeepChain~\cite{weng2021deepchain}   & Parties over encrypted gradients & Audit + collateral incentives & None (privacy focus) & Rational participants \\
 Biscotti~\cite{shayan2021biscotti}   & VRF-selected committee & Secure aggregation, commitments & Multi-Krum & $\geq$70\% honest stake \\
 VFChain~\cite{peng2022vfchain}       & Selected committee & Verifiable proofs on-chain & Committee verification & Honest committee majority \\
 BAFFLE~\cite{ramanan2020baffle}      & Smart contract (chunked) & Replicated contract execution & Client-side score-and-bid & Honest chain quorum \\
-\tmfl{} (this work)                  & All PBFT validators & Deterministic re-execution + model validation & Four-stage validation pipeline & $\leq f$ of $3f{+}1$ validators faulty \\
+\tmfl{} (this work)                  & All PBFT validators & Re-execution + model validation & 4-stage validation pipeline & $\leq f$ of $3f{+}1$ validators faulty \\
 \bottomrule
 \end{tabular}
 \vspace{2pt}

@@ -318,44 +318,42 @@ ranges from 3.25 to 4.19 seconds across testbeds of 4 to 16 compute nodes~\cite{
                      minimum height=4.5mm, inner sep=2pt, align=center},
         flcomp/.style={draw=blue!60!black, fill=blue!12, rounded corners=1pt,
                        minimum height=4.5mm, inner sep=2pt, align=center},
-        layer/.style={draw=black!50, rounded corners=2pt, inner sep=3.5pt},
-        lname/.style={font=\scriptsize\bfseries, anchor=north west, inner sep=2.5pt},
+        layer/.style={draw=black!50, rounded corners=2pt, inner sep=3pt},
+        lname/.style={font=\scriptsize\bfseries, inner sep=1pt, anchor=south west},
         node distance=1.6mm and 1.6mm
     ]
     % ---- Network Management Layer ----
     \node[comp] (depclient) {Application\\Deployment Client};
     \node[comp, right=3mm of depclient] (wfclient) {Workflow\\Creation Client};
+    \node[lname] (mgmtlbl) at ($(depclient.north west)+(0,1mm)$) {Network Management Layer};
     \begin{scope}[on background layer]
-        \node[layer, fit=(depclient)(wfclient), label={[lname]north west:Network Management Layer},
-              inner ysep=5.5mm, yshift=-1.5mm] (mgmt) {};
+        \node[layer, fit=(mgmtlbl)(depclient)(wfclient)] (mgmt) {};
     \end{scope}
 
     % ---- Computation Layer ----
-    \node[comp, below=16mm of depclient.south west, anchor=north west] (validator) {Sawtooth Validator\\(PBFT)};
+    \node[comp, below=12mm of depclient.south west, anchor=north west] (validator) {Sawtooth Validator\\(PBFT)};
     \node[comp, right=of validator] (schedtps) {Scheduling\\TPs};
     \node[flcomp, right=of schedtps] (aggreqtp) {aggregation-\\request-tp};
     \node[flcomp, right=of aggreqtp] (aggconftp) {aggregation-\\confirmation-tp};
-    \node[comp, below=of validator] (taskexec) {Task Executor\\(DinD)};
+    \node[comp, below=of validator.south west, anchor=north west] (taskexec) {Task Executor\\(DinD)};
     \node[comp, right=of taskexec] (schedhandler) {Schedule\\Event Handler};
     \node[flcomp, right=of schedhandler] (agghandler) {Aggregation\\Event Handler};
     \node[flcomp, right=of agghandler] (valdist) {Validation Dataset\\Distributor};
-    \node[comp, below=of taskexec] (couchdb) {CouchDB Cluster\\(model\_weights)};
+    \node[comp, below=of taskexec.south west, anchor=north west] (couchdb) {CouchDB Cluster\\(model\_weights)};
     \node[comp, right=of couchdb] (redis) {Redis\\Cluster};
     \node[comp, right=of redis] (peereg) {Peer Registry\\(membership)};
+    \node[lname] (compllbl) at ($(validator.north west)+(0,1mm)$) {Computation Layer ($\times$4 compute nodes)};
     \begin{scope}[on background layer]
-        \node[layer, fit=(validator)(aggconftp)(couchdb)(peereg),
-              label={[lname]north west:Computation Layer ($\times$4 compute nodes)},
-              inner ysep=5.5mm, yshift=-1.5mm] (compl) {};
+        \node[layer, fit=(compllbl)(validator)(aggconftp)(couchdb)(peereg)(valdist)] (compl) {};
     \end{scope}
 
     % ---- Perception Layer ----
-    \node[comp, below=26mm of taskexec.south west, anchor=north west] (simulation) {FL Simulation\\(two-phase driver)};
+    \node[comp, below=12mm of couchdb.south west, anchor=north west] (simulation) {FL Simulation\\(two-phase driver)};
     \node[flcomp, right=of simulation] (fedresp) {Federated Response\\Manager (ZMQ)};
     \node[comp, right=of fedresp] (txinit) {Transaction\\Initiator};
+    \node[lname] (perclbl) at ($(simulation.north west)+(0,1mm)$) {Perception Layer ($\times$4--10 IoT nodes)};
     \begin{scope}[on background layer]
-        \node[layer, fit=(simulation)(txinit),
-              label={[lname]north west:Perception Layer ($\times$4--10 IoT nodes)},
-              inner ysep=5.5mm, yshift=-1.5mm] (perc) {};
+        \node[layer, fit=(perclbl)(simulation)(txinit)] (perc) {};
     \end{scope}
 
     % ---- Inter-layer arrows ----
@@ -416,7 +414,7 @@ Fig.~\ref{fig:protocol} shows the two-phase protocol as a sequence diagram.
     \centering
     \begin{tikzpicture}[
         font=\scriptsize,
-        actor/.style={draw, fill=black!8, rounded corners=1pt, minimum height=5mm,
+        actor/.style={draw, fill=black!8, rounded corners=1pt, minimum height=9mm,
                       inner xsep=3pt, align=center},
         flactor/.style={actor, draw=blue!60!black, fill=blue!12},
         msg/.style={-{Stealth}, black!70},
@@ -441,7 +439,7 @@ Fig.~\ref{fig:protocol} shows the two-phase protocol as a sequence diagram.
     % ---- Phase 1: Local Training ----
     \draw[msg] ($(iot.south)+(0,-0.6)$)   -- ($(sched.south)+(0,-0.6)$)  node[note] {training data txn};
     \draw[msg] ($(sched.south)+(0,-1.2)$) -- ($(exec.south)+(0,-1.2)$)   node[note] {LCDWRR schedule (consensus)};
-    \draw[msg] ($(exec.south)+(0,-1.8)$)  -- ++(1.1,0) node[right, font=\tiny] {run training container};
+    \draw[msg] ($(exec.south)+(0,-1.8)$)  -- ++(0.5,0) node[right, font=\tiny] {run training container};
     \draw[msg] ($(exec.south)+(0,-2.5)$)  -- ($(iot.south)+(0,-2.5)$)    node[note] {trained weights (ZMQ, CURVE)};
 
     % ---- Phase 2: Consensus-Validated Aggregation ----
